@@ -126,7 +126,7 @@ export async function enrichScoopProductLogistics(sku: string, options: { fetchI
   } catch (error) {
     const resolution: ScoopProductPageResolution = product.productPageResolution?.status === "RESOLVED" ? product.productPageResolution : { status: "ERROR", resolvedAt: attemptedAt, error: error instanceof Error ? error.message : "Product page request failed." };
     const message = error instanceof Error ? error.message : "Product page request failed.";
-    const reason = /challenge/i.test(message) ? "SOURCE_BLOCKED" as const : /HTTP 429/.test(message) ? "RATE_LIMITED" as const : /abort|network|fetch|HTTP 5/i.test(message) ? "NETWORK_ERROR" as const : "PARSER_ERROR" as const;
+    const reason = manufacturer.outcome === "FAILED" && manufacturer.reason === "LOW_IDENTITY_CONFIDENCE" ? "LOW_IDENTITY_CONFIDENCE" as const : /challenge|HTTP 401|HTTP 403/.test(message) ? "SOURCE_BLOCKED" as const : /HTTP 429/.test(message) ? "RATE_LIMITED" as const : /abort|network|fetch|HTTP 5/i.test(message) ? "NETWORK_ERROR" as const : /SKU did not match/.test(message) ? "IDENTITY_NOT_RESOLVED" as const : "PARSER_ERROR" as const;
     const updated: ScoopCatalogueProduct = { ...product, productPageResolution: resolution, logisticsLastAttemptAt: attemptedAt, logisticsLastError: message, logisticsLastFailure: reason };
     await saveScoopCatalogueProduct(updated); return { product: updated, cached: false };
   }
@@ -149,6 +149,7 @@ export async function enrichScoopLogisticsBatch(input: { skus?: string[]; limit?
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, skus.length) }, async () => {
     while (cursor < skus.length) { const sku = skus[cursor++]; const before = catalogue.find((product) => product.supplierSku === sku); const result = await enrichScoopProductLogistics(sku, input); const previousStatus = before?.logisticsMetadata?.status ?? "MISSING"; results.push({ ...result, previousStatus, readinessChanged: previousStatus !== "COMPLETE" && result.product.logisticsMetadata?.status === "COMPLETE" }); if (cursor < skus.length) await sleep(REQUEST_DELAY_MS); }
   }));
+  const currentCatalogue = await listScoopCatalogueProducts();
   const summary: ScoopLogisticsEnrichmentSummary = {
     requested: skus.length, processed: results.length,
     complete: results.filter(({ product }) => product.logisticsMetadata?.status === "COMPLETE").length,
@@ -156,9 +157,9 @@ export async function enrichScoopLogisticsBatch(input: { skus?: string[]; limit?
     missing: results.filter(({ product }) => product.logisticsMetadata?.status === "MISSING" || ["NOT_FOUND", "AMBIGUOUS"].includes(product.productPageResolution?.status ?? "")).length,
     failed: results.filter(({ product }) => product.productPageResolution?.status === "ERROR" || Boolean(product.logisticsLastError && product.productPageResolution?.status === "RESOLVED")).length,
     cached: results.filter((result) => result.cached).length, lastEnrichmentAt: new Date().toISOString(),
-    bySource: Object.fromEntries([...new Set(catalogue.map((product) => product.logisticsMetadata?.source ?? "MISSING"))].map((source) => [source, catalogue.filter((product) => (product.logisticsMetadata?.source ?? "MISSING") === source).length])),
-    failureReasons: Object.fromEntries([...new Set(catalogue.map((product) => product.logisticsLastFailure).filter(Boolean))].map((reason) => [reason!, catalogue.filter((product) => product.logisticsLastFailure === reason).length])),
-    manufacturerCoverage: Object.fromEntries([...new Set(catalogue.map((product) => product.manufacturer).filter(Boolean))].map((manufacturer) => [manufacturer!, { total: catalogue.filter((product) => product.manufacturer === manufacturer).length, complete: catalogue.filter((product) => product.manufacturer === manufacturer && product.logisticsMetadata?.status === "COMPLETE").length }])),
+    bySource: Object.fromEntries([...new Set(currentCatalogue.map((product) => product.logisticsMetadata?.source ?? "MISSING"))].map((source) => [source, currentCatalogue.filter((product) => (product.logisticsMetadata?.source ?? "MISSING") === source).length])),
+    failureReasons: Object.fromEntries([...new Set(currentCatalogue.map((product) => product.logisticsLastFailure).filter(Boolean))].map((reason) => [reason!, currentCatalogue.filter((product) => product.logisticsLastFailure === reason).length])),
+    manufacturerCoverage: Object.fromEntries([...new Set(currentCatalogue.map((product) => product.manufacturer).filter(Boolean))].map((manufacturer) => [manufacturer!, { total: currentCatalogue.filter((product) => product.manufacturer === manufacturer).length, complete: currentCatalogue.filter((product) => product.manufacturer === manufacturer && product.logisticsMetadata?.status === "COMPLETE").length }])),
   };
   await saveScoopLogisticsEnrichmentSummary(summary); return { summary, products: results.map(({ product, cached, previousStatus, readinessChanged }) => ({ supplierSku: product.supplierSku, manufacturer: product.manufacturer, model: product.logisticsMetadata?.model, identityConfidence: product.logisticsMetadata?.identityConfidence, source: product.logisticsMetadata?.source, status: product.logisticsMetadata?.status ?? "MISSING", failureReason: product.logisticsLastFailure, shippingBasis: product.logisticsMetadata?.shippingBasis, cached, previousStatus, readinessChanged })) };
 }

@@ -152,8 +152,9 @@ internal SupplierOffer metadata:
 - product-page resolution state: `RESOLVED`, `NOT_FOUND`, `AMBIGUOUS` or `ERROR`
 
 The action at `/admin/suppliers/scoop` processes at most 25 products per run and
-supports missing-only, selected-for-launch and manufacturer-filtered batches.
-Selected launch products and verified mappings are prioritized. Successful
+supports missing-only, selected-for-launch, verified-mapping and
+manufacturer-filtered batches. Selected launch products, verified mappings and
+approved pricing are prioritized in that order. Successful
 physical specifications are cached for 30 days; a forced staff retry is still
 available. A later request failure records a structured reason but does not
 delete a previous valid logistics snapshot.
@@ -221,6 +222,9 @@ The initial official-source records include:
 - Ubiquiti `AF-11`, MikroTik `RB-260GS` and Fanvil `FAN-V50G`, using official
   specification documents. Fanvil remains partial because the official source
   does not provide a defensible per-device weight.
+- Ubiquiti `U7-LR` and `UPOE48-30W` using exact official Ubiquiti technical
+  specifications. Cudy `CD-WR1200` remains a review candidate because Scoop
+  does not identify the hardware revision and official revisions differ.
 
 Package measurements are stored separately from product measurements. Complete
 official package data is preferred for shipping; otherwise product measurements
@@ -229,6 +233,11 @@ manufacturer scraper. Unsupported or mismatched identities remain missing with
 structured failure reasons. Operational
 coverage emphasizes verified mappings, verified in-stock mappings and complete
 shipping-ready mapped offers rather than implying the entire feed is ready.
+
+Launch-focused runs return per-SKU identity, source, confidence, shipping basis,
+quality state, failure reason and whether completion cleared the logistics
+readiness blocker. Manual overrides remain an exception when authoritative
+automatic data cannot complete the record.
 
 ## Mapping And Pricing Preparation
 

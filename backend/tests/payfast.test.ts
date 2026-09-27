@@ -125,7 +125,7 @@ import {
 import { deriveScoopLogisticsStatus, effectiveScoopLogisticsMetadata, validateScoopLogisticsValues } from "../suppliers/scoop/scoopLogisticsMetadata.js";
 import { deriveScoopLaunchReadiness, latestScoopProposal, scoopCandidateReasons, suggestScoopLaunchCandidates } from "../suppliers/scoop/scoopLaunchReadiness.js";
 import { applyScoopLogisticsCsv, exportMissingScoopLogisticsCsv, previewScoopLogisticsCsv } from "../suppliers/scoop/scoopLogisticsCsv.js";
-import { acquireScoopManufacturerLogistics, normalizeDimension, normalizeWeight, type ScoopManufacturerMetadataProvider } from "../suppliers/scoop/scoopManufacturerLogistics.js";
+import { acquireScoopManufacturerLogistics, matchesScoopManufacturerAlias, normalizeDimension, normalizeWeight, type ScoopManufacturerMetadataProvider } from "../suppliers/scoop/scoopManufacturerLogistics.js";
 import { createTekCentralProductFromScoop, requireWeakMappingConfirmation, scoreScoopProductMatch, suggestScoopCategory, suggestScoopProductTitles } from "../suppliers/scoop/scoopProductCreation.js";
 import { applyScoopWebsiteImport, discoverScoopWebsiteProducts, previewScoopWebsiteImport } from "../suppliers/scoop/scoopWebsiteImport.js";
 import { getInternalProduct } from "../internalProductRepository.js";
@@ -1379,6 +1379,16 @@ try {
   assert.equal(deriveScoopLaunchReadiness({ product: launchProduct, mapping: launchMapping, proposal: approvedProposal }).status, "READY_FOR_PUBLISH_REVIEW");
   assert.equal(deriveScoopLaunchReadiness({ product: launchProduct, mapping: launchMapping, proposal: { ...approvedProposal, warnings: ["BELOW_TARGET_MARGIN"], warningDetails: [{ code: "BELOW_TARGET_MARGIN", severity: "WARNING", message: "Expected gross margin is below the configured target." }] } }).status, "READY_FOR_PUBLISH_REVIEW");
   assert.equal(deriveScoopLaunchReadiness({ product: launchProduct, mapping: launchMapping, proposal: { ...approvedProposal, warnings: ["BELOW_MINIMUM_PROFIT"], warningDetails: [{ code: "BELOW_MINIMUM_PROFIT", severity: "BLOCKING", message: "Gross profit is below the configured minimum." }] } }).status, "NOT_READY");
+  const missingLaunch = { ...launchProduct, supplierSku: "U7-LR", manufacturer: "Ubiquiti", description: "Ubiquiti UniFi WiFi 7 Long Range Dual Band AP", logisticsMetadata: undefined };
+  const missingVerified = { ...launchProduct, supplierSku: "AF-11", manufacturer: "Ubiquiti", description: "Ubiquiti UISP airFiber 11GHz Radio", launchAssortment: undefined, logisticsMetadata: undefined };
+  const missingCudy = { ...launchProduct, supplierSku: "CD-WR1200", manufacturer: "Cudy", description: "Cudy Dual Band WiFi 5 Router", launchAssortment: undefined, logisticsMetadata: undefined };
+  const batchCatalogue = [launchProduct, missingLaunch, missingVerified, missingCudy] as ScoopCatalogueProduct[];
+  assert.deepEqual(selectScoopLogisticsBatchCandidates({ catalogue: batchCatalogue, verified: new Set(["AF-11"]), approved: new Set(), selectedForLaunchOnly: true }).map((product) => product.supplierSku), ["ACB-ISP", "U7-LR"]);
+  assert.deepEqual(selectScoopLogisticsBatchCandidates({ catalogue: batchCatalogue, verified: new Set(["AF-11"]), approved: new Set(), verifiedMappingsOnly: true }).map((product) => product.supplierSku), ["AF-11"]);
+  assert.deepEqual(selectScoopLogisticsBatchCandidates({ catalogue: batchCatalogue, verified: new Set(), approved: new Set(), manufacturer: "Cudy" }).map((product) => product.supplierSku), ["CD-WR1200"]);
+  assert.equal(selectScoopLogisticsBatchCandidates({ catalogue: Array.from({ length: 30 }, (_, index) => ({ ...missingCudy, supplierSku: `SKU-${index}` })) as ScoopCatalogueProduct[], verified: new Set(), approved: new Set(), limit: 30 }).length, 25);
+  assert.equal(matchesScoopManufacturerAlias(missingLaunch, "U7 LR"), true);
+  assert.equal(matchesScoopManufacturerAlias(missingCudy, "WR1200 2.0"), false);
 
   const scoopXmlFixture = `<?xml version="1.0" encoding="UTF-8"?>
 <ScoopPriceList>
@@ -1476,6 +1486,7 @@ try {
   const failingFetch: typeof fetch = async () => new Response("Unavailable", { status: 503 });
   await enrichScoopProductLogistics("FLY-2G", { fetchImpl: failingFetch, force: true });
   assert.equal((await getScoopCatalogueProduct("FLY-2G"))?.logisticsMetadata?.weightGrams, 250);
+  assert.equal((await getScoopCatalogueProduct("FLY-2G"))?.logisticsLastFailure, "NETWORK_ERROR");
   const adminOverride = await saveScoopAdminLogistics({ supplierSku: "FLY-2G", weightGrams: 300, actor: "Test Staff" });
   assert.equal(adminOverride?.product.logisticsMetadata?.source, "ADMIN");
   assert.equal(adminOverride?.product.logisticsMetadata?.status, "WEIGHT_ONLY");

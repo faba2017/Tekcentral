@@ -16,7 +16,7 @@ export interface ScoopManufacturerMetadataProvider {
 }
 
 const normalize = (value?: string) => (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-function matchesAlias(product: ScoopCatalogueProduct, alias: string) {
+export function matchesScoopManufacturerAlias(product: ScoopCatalogueProduct, alias: string) {
   const normalizedAlias = normalize(alias);
   return normalizedAlias === normalize(product.supplierSku) || normalize(product.description).includes(normalizedAlias);
 }
@@ -44,11 +44,11 @@ class OfficialRecordProvider implements ScoopManufacturerMetadataProvider {
   constructor(public id: string, private manufacturer: string) {}
   supportsManufacturer(manufacturer?: string) { return normalize(manufacturer) === normalize(this.manufacturer); }
   async resolveIdentity(product: ScoopCatalogueProduct) {
-    return records.filter((record) => normalize(record.identity.manufacturer) === normalize(product.manufacturer)).find((record) => normalize(record.identity.scoopSku) === normalize(product.supplierSku) && record.identity.aliases.some((alias) => matchesAlias(product, alias)));
+    return records.filter((record) => normalize(record.identity.manufacturer) === normalize(product.manufacturer)).find((record) => normalize(record.identity.scoopSku) === normalize(product.supplierSku) && record.identity.aliases.some((alias) => matchesScoopManufacturerAlias(product, alias)));
   }
   async fetchLogistics(identity: ManufacturerLogisticsLookup) { return identity; }
   verifyIdentity(product: ScoopCatalogueProduct, result: ManufacturerLogisticsLookup): IdentityConfidence {
-    return normalize(product.manufacturer) === normalize(result.identity.manufacturer) && normalize(product.supplierSku) === normalize(result.identity.scoopSku) && result.identity.aliases.some((alias) => matchesAlias(product, alias)) ? result.identity.identityConfidence : "LOW";
+    return normalize(product.manufacturer) === normalize(result.identity.manufacturer) && normalize(product.supplierSku) === normalize(result.identity.scoopSku) && result.identity.aliases.some((alias) => matchesScoopManufacturerAlias(product, alias)) ? result.identity.identityConfidence : "LOW";
   }
   normalizeLogistics(result: ManufacturerLogisticsLookup) {
     const packageComplete = Boolean(result.package?.weightGrams && result.package.lengthMm && result.package.widthMm && result.package.heightMm);
