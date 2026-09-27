@@ -1,0 +1,14 @@
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+export type ShippingQuoteStatus = "READY" | "PARTIAL" | "UNAVAILABLE" | "EXPIRED";
+export interface ShippingQuoteItem { productId: string; quantity: number; }
+export type ShippingDiagnosticCode = "INVALID_ADDRESS" | "UNSUPPORTED_DESTINATION" | "MISSING_LOGISTICS" | "MISSING_WEIGHT" | "MISSING_DIMENSIONS" | "RATE_NOT_CONFIGURED" | "CALCULATION_ERROR" | "UNSUPPORTED_FULFILMENT" | "SHIPPING_ESTIMATOR_FAILED" | "ADDRESS_VALIDATION_FAILED" | "STALE_LOGISTICS" | "UNKNOWN_PRODUCT_SOURCE";
+export interface ShippingDiagnostic { code: ShippingDiagnosticCode; productId?: string; fulfilmentGroup?: string; source?: string; missingPrerequisite?: string; }
+export interface FulfilmentGroupQuote { groupId: string; kind: "LOCAL" | "INTERNATIONAL"; itemProductIds: string[]; customerLabel: string; customerDescription?: string; customerCharge?: number; supplierShippingCost?: number; estimatedInternalFreightCost?: number; actualSupplierFreightCost?: number; bufferAmount?: number; policyType?: string; zone?: string; actualWeightKg?: number; volumetricWeightKg?: number; billableWeightKg?: number; rateCardVersion?: number; calculationVersion?: string; provenance?: string; currency: "ZAR"; estimate?: string; source: "TEKCENTRAL_CONFIGURED" | "TEKCENTRAL_ZONE_ESTIMATE" | "SCOOP_CONFIGURED" | "CJ_LOGISTICS"; internalSupplierCode?: string; internalMethod?: string; warnings: string[]; diagnostics?: ShippingDiagnostic[]; }
+export interface ShippingQuote { quoteId: string; cartFingerprint: string; items: ShippingQuoteItem[]; destination: { country: string; province: string; city?: string; suburb?: string; postalCode: string }; deliveryMethodId: string; currency: "ZAR"; fulfilmentGroups: FulfilmentGroupQuote[]; customerShippingCharge?: number; supplierShippingCost?: number; estimatedInternalFreightCost?: number; generatedAt: string; expiresAt: string; status: ShippingQuoteStatus; warnings: string[]; diagnostics?: ShippingDiagnostic[]; settingsSnapshot: unknown; }
+interface Store { version: 1; quotes: ShippingQuote[]; }
+function path(){return resolve(process.cwd(),".data","shipping-quotes.json");}
+async function readStore():Promise<Store>{try{const value=JSON.parse(await readFile(path(),"utf8")) as Store;return value.version===1&&Array.isArray(value.quotes)?value:{version:1,quotes:[]};}catch{return{version:1,quotes:[]};}}
+async function writeStore(store:Store){const target=path();const temp=`${target}.tmp`;await mkdir(dirname(target),{recursive:true});await writeFile(temp,JSON.stringify(store,null,2));await rename(temp,target);}
+export async function saveShippingQuote(quote:ShippingQuote){const store=await readStore();store.quotes=[quote,...store.quotes].slice(0,500);await writeStore(store);return quote;}
+export async function getShippingQuote(id:string){return (await readStore()).quotes.find((quote)=>quote.quoteId===id);}

@@ -1,0 +1,92 @@
+.hero-circuit-lines {
+  background-image:
+    linear-gradient(90deg, transparent 0 9%, rgba(70, 157, 139, 0.2) 9% 9.12%, transparent 9.12% 100%),
+    linear-gradient(0deg, transparent 0 18%, rgba(70, 157, 139, 0.14) 18% 18.12%, transparent 18.12% 100%),
+    repeating-linear-gradient(135deg, transparent 0 54px, rgba(70, 157, 139, 0.09) 55px 56px, transparent 57px 112px);
+  background-size: 380px 240px, 420px 280px, 100% 100%;
+  mask-image: linear-gradient(90deg, #000, transparent 42%, transparent 58%, #000);
+}
+
+.hero-product-composition::after {
+  position: absolute;
+  inset: auto 1% 1% 1%;
+  height: 27%;
+  content: "";
+  background: radial-gradient(ellipse, rgba(0, 0, 0, 0.86), transparent 70%);
+  filter: blur(16px);
+}
+
+.hero-product-layer {
+  transition: transform 280ms ease, filter 280ms ease;
+  animation: hero-product-float 7s ease-in-out infinite;
+  filter: drop-shadow(0 24px 22px rgba(0, 0, 0, 0.48));
+}
+
+.hero-product-layer:hover,
+.hero-product-layer:focus-visible {
+  transform: translateY(-6px) scale(1.018);
+  filter: drop-shadow(0 20px 22px rgba(0, 0, 0, 0.52)) drop-shadow(0 0 18px rgba(0, 230, 195, 0.22));
+}
+
+.hero-product-wireless { left: 34%; top: 7%; z-index: 5; width: 31%; height: 35%; animation-delay: -3.1s; animation-duration: 8.2s; }
+.hero-product-switch { left: 7%; top: 24%; z-index: 8; width: 82%; height: 47%; animation-delay: -1.7s; animation-duration: 7.8s; }
+.hero-product-ups { left: 5%; top: 51%; z-index: 9; width: 34%; height: 42%; animation-delay: -4.4s; animation-duration: 8.6s; }
+.hero-product-phone { right: 1%; top: 34%; z-index: 10; width: 37%; height: 48%; animation-delay: -2.5s; animation-duration: 7.4s; }
+.hero-product-printer { right: 8%; bottom: 0; z-index: 11; width: 36%; height: 36%; animation-delay: -5.1s; animation-duration: 8.8s; }
+.hero-product-cable { left: 27%; bottom: -1%; z-index: 12; width: 43%; height: 26%; animation-delay: -3.8s; animation-duration: 8s; }
+
+.hero-product-stage:has(.hero-shop-cta:hover) .hero-product-glow {
+  opacity: 1;
+  filter: blur(24px) brightness(1.25);
+}
+
+@keyframes hero-product-float {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 -5px; }
+}
+
+@media (max-width: 899px) {
+  .hero-product-wireless { left: 34%; top: 5%; width: 31%; height: 35%; }
+  .hero-product-switch { left: 7%; top: 25%; width: 82%; height: 45%; }
+  .hero-product-ups { left: 3%; top: 53%; width: 33%; height: 40%; }
+  .hero-product-phone { right: 0; top: 36%; width: 37%; height: 46%; }
+  .hero-product-printer { right: 12%; bottom: 0; width: 35%; height: 34%; }
+  .hero-product-cable { display: none; }
+}
+
+@media (max-width: 520px) {
+  .hero-product-composition { margin-top: -12px; }
+  .hero-product-wireless { left: 24%; top: 10%; width: 26%; height: 34%; }
+  .hero-product-switch { left: 1%; top: 23%; width: 82%; height: 60%; }
+  .hero-product-phone { right: 0; top: 29%; width: 43%; height: 62%; }
+  .hero-product-ups,
+  .hero-product-printer { display: none; }
+  .hero-product-layer { animation-name: hero-product-float-mobile; }
+  .hero-zeus {
+    top: 3%;
+    right: 0;
+    width: 88px;
+    height: 88px;
+    transform: scale(0.78);
+    transform-origin: right top;
+  }
+  .hero-zeus > span {
+    top: 2px;
+    right: 62%;
+    width: 132px;
+    padding: 6px 8px;
+    font-size: 10px;
+    line-height: 14px;
+  }
+}
+
+@keyframes hero-product-float-mobile {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 -3px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-product-layer { animation: none; }
+  .hero-product-layer:hover,
+  .hero-product-layer:focus-visible { transform: none; }
+}
