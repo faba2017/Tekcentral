@@ -1,0 +1,168 @@
+# Proposed K.2 staging App Platform spec. Do not apply before explicit provisioning approval.
+# Secrets are intentionally absent and must be assigned per component in App Platform.
+name: tekcentral-staging
+region: fra
+domains:
+  - domain: staging.tekcentral.co.za
+    type: PRIMARY
+  - domain: admin-staging.tekcentral.co.za
+    type: ALIAS
+  - domain: api-staging.tekcentral.co.za
+    type: ALIAS
+ingress:
+  rules:
+    - match:
+        authority:
+          exact: api-staging.tekcentral.co.za
+        path:
+          prefix: /
+      component:
+        name: api
+        preserve_path_prefix: true
+    - match:
+        authority:
+          exact: admin-staging.tekcentral.co.za
+        path:
+          prefix: /
+      component:
+        name: admin
+        preserve_path_prefix: true
+    - match:
+        authority:
+          exact: staging.tekcentral.co.za
+        path:
+          prefix: /
+      component:
+        name: storefront
+        preserve_path_prefix: true
+services:
+  - name: storefront
+    github: { repo: faba2017/Tekcentral, branch: main, deploy_on_push: false }
+    source_dir: /
+    environment_slug: node-js
+    build_command: npm ci && npm run frontend:production:build
+    run_command: npm run frontend:serve:storefront
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    health_check: { http_path: /ready }
+    envs:
+      - { key: NODE_ENV, value: production, scope: RUN_AND_BUILD_TIME, type: GENERAL }
+      - { key: APP_ENV, value: staging, scope: RUN_TIME, type: GENERAL }
+      - { key: HOST, value: 0.0.0.0, scope: RUN_TIME, type: GENERAL }
+      - { key: PORT, value: "8080", scope: RUN_TIME, type: GENERAL }
+      - { key: PUBLIC_API_URL, value: https://api-staging.tekcentral.co.za, scope: RUN_TIME, type: GENERAL }
+      - { key: VITE_API_BASE_URL, value: https://api-staging.tekcentral.co.za, scope: RUN_AND_BUILD_TIME, type: GENERAL }
+      - { key: VITE_PUBLIC_API_URL, value: https://api-staging.tekcentral.co.za, scope: BUILD_TIME, type: GENERAL }
+      - { key: VITE_ADMIN_HOST, value: admin-staging.tekcentral.co.za, scope: BUILD_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_PUBLIC_BASE_URL, value: https://tekcentral-staging-public-media.fra1.digitaloceanspaces.com, scope: RUN_TIME, type: GENERAL }
+  - name: admin
+    github: { repo: faba2017/Tekcentral, branch: main, deploy_on_push: false }
+    source_dir: /
+    environment_slug: node-js
+    build_command: npm ci && npm run frontend:production:build
+    run_command: npm run frontend:serve:admin
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    health_check: { http_path: /ready }
+    envs:
+      - { key: NODE_ENV, value: production, scope: RUN_AND_BUILD_TIME, type: GENERAL }
+      - { key: APP_ENV, value: staging, scope: RUN_TIME, type: GENERAL }
+      - { key: HOST, value: 0.0.0.0, scope: RUN_TIME, type: GENERAL }
+      - { key: PORT, value: "8080", scope: RUN_TIME, type: GENERAL }
+      - { key: PUBLIC_API_URL, value: https://api-staging.tekcentral.co.za, scope: RUN_TIME, type: GENERAL }
+      - { key: VITE_API_BASE_URL, value: https://api-staging.tekcentral.co.za, scope: RUN_AND_BUILD_TIME, type: GENERAL }
+      - { key: VITE_PUBLIC_API_URL, value: https://api-staging.tekcentral.co.za, scope: BUILD_TIME, type: GENERAL }
+      - { key: VITE_ADMIN_HOST, value: admin-staging.tekcentral.co.za, scope: BUILD_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_PUBLIC_BASE_URL, value: https://tekcentral-staging-public-media.fra1.digitaloceanspaces.com, scope: RUN_TIME, type: GENERAL }
+  - name: api
+    github: { repo: faba2017/Tekcentral, branch: main, deploy_on_push: false }
+    source_dir: /
+    environment_slug: node-js
+    build_command: npm ci && npm run backend:build
+    run_command: node backend-dist/backend/server.js
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb-fixed
+    health_check: { http_path: /ready }
+    envs:
+      - { key: NODE_ENV, value: production, scope: RUN_TIME, type: GENERAL }
+      - { key: APP_ENV, value: staging, scope: RUN_TIME, type: GENERAL }
+      - { key: APP_ROLE, value: web, scope: RUN_TIME, type: GENERAL }
+      - { key: HOST, value: 0.0.0.0, scope: RUN_TIME, type: GENERAL }
+      - { key: PORT, value: "8080", scope: RUN_TIME, type: GENERAL }
+      - { key: PUBLIC_STOREFRONT_ORIGIN, value: https://staging.tekcentral.co.za, scope: RUN_TIME, type: GENERAL }
+      - { key: ADMIN_ORIGIN, value: https://admin-staging.tekcentral.co.za, scope: RUN_TIME, type: GENERAL }
+      - { key: PUBLIC_API_URL, value: https://api-staging.tekcentral.co.za, scope: RUN_TIME, type: GENERAL }
+      - { key: PERSISTENCE_PROVIDER, value: POSTGRES, scope: RUN_TIME, type: GENERAL }
+      - { key: DATABASE_RUNTIME_ROLE, value: tekcentral_runtime, scope: RUN_TIME, type: GENERAL }
+      - { key: DATABASE_MIGRATION_ROLE, value: tekcentral_migration, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_PROVIDER, value: SPACES, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_ENDPOINT, value: https://fra1.digitaloceanspaces.com, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_REGION, value: fra1, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_PUBLIC_BUCKET, value: tekcentral-staging-public-media, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_PRIVATE_BUCKET, value: tekcentral-staging-private-documents, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_PUBLIC_BASE_URL, value: https://tekcentral-staging-public-media.fra1.digitaloceanspaces.com, scope: RUN_TIME, type: GENERAL }
+      - { key: DATABASE_SSL_MODE, value: verify-full, scope: RUN_TIME, type: GENERAL }
+      - { key: PAYFAST_MODE, value: sandbox, scope: RUN_TIME, type: GENERAL }
+      - { key: CJ_REAL_ORDER_CREATION_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: ZEUS_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: ADMIN_AI_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: CUSTOMER_DELIVERY_WORKER_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: FX_SCHEDULER_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: SYNTECH_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: SYNTECH_UAT_ORDER_WRITES_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+workers:
+  - name: worker
+    github: { repo: faba2017/Tekcentral, branch: main, deploy_on_push: false }
+    source_dir: /
+    environment_slug: node-js
+    build_command: npm ci && npm run backend:build
+    run_command: node backend-dist/backend/server.js
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb-fixed
+    envs:
+      - { key: NODE_ENV, value: production, scope: RUN_TIME, type: GENERAL }
+      - { key: APP_ENV, value: staging, scope: RUN_TIME, type: GENERAL }
+      - { key: APP_ROLE, value: worker, scope: RUN_TIME, type: GENERAL }
+      - { key: PUBLIC_STOREFRONT_ORIGIN, value: https://staging.tekcentral.co.za, scope: RUN_TIME, type: GENERAL }
+      - { key: ADMIN_ORIGIN, value: https://admin-staging.tekcentral.co.za, scope: RUN_TIME, type: GENERAL }
+      - { key: PUBLIC_API_URL, value: https://api-staging.tekcentral.co.za, scope: RUN_TIME, type: GENERAL }
+      - { key: PERSISTENCE_PROVIDER, value: POSTGRES, scope: RUN_TIME, type: GENERAL }
+      - { key: DATABASE_RUNTIME_ROLE, value: tekcentral_runtime, scope: RUN_TIME, type: GENERAL }
+      - { key: DATABASE_MIGRATION_ROLE, value: tekcentral_migration, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_PROVIDER, value: SPACES, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_ENDPOINT, value: https://fra1.digitaloceanspaces.com, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_REGION, value: fra1, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_PUBLIC_BUCKET, value: tekcentral-staging-public-media, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_PRIVATE_BUCKET, value: tekcentral-staging-private-documents, scope: RUN_TIME, type: GENERAL }
+      - { key: OBJECT_STORAGE_PUBLIC_BASE_URL, value: https://tekcentral-staging-public-media.fra1.digitaloceanspaces.com, scope: RUN_TIME, type: GENERAL }
+      - { key: DATABASE_SSL_MODE, value: verify-full, scope: RUN_TIME, type: GENERAL }
+      - { key: PAYFAST_MODE, value: sandbox, scope: RUN_TIME, type: GENERAL }
+      - { key: CJ_REAL_ORDER_CREATION_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: ZEUS_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: ADMIN_AI_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: ADMIN_AI_AUTOMATION_WORKER_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: CUSTOMER_DELIVERY_WORKER_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: COMMERCE_RECONCILIATION_WORKER_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: FX_SCHEDULER_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: SYNTECH_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+      - { key: SYNTECH_UAT_ORDER_WRITES_ENABLED, value: "false", scope: RUN_TIME, type: GENERAL }
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    github: { repo: faba2017/Tekcentral, branch: main, deploy_on_push: false }
+    source_dir: /
+    environment_slug: node-js
+    build_command: npm ci && npm run backend:build
+    run_command: npm run persistence:migrate && npm run persistence:roles
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    envs:
+      - { key: NODE_ENV, value: production, scope: RUN_TIME, type: GENERAL }
+      - { key: APP_ENV, value: staging, scope: RUN_TIME, type: GENERAL }
+      - { key: PERSISTENCE_PROVIDER, value: POSTGRES, scope: RUN_TIME, type: GENERAL }
+      - { key: DATABASE_RUNTIME_ROLE, value: tekcentral_runtime, scope: RUN_TIME, type: GENERAL }
+      - { key: DATABASE_MIGRATION_ROLE, value: tekcentral_migration, scope: RUN_TIME, type: GENERAL }
+      - { key: DATABASE_SSL_MODE, value: verify-full, scope: RUN_TIME, type: GENERAL }

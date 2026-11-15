@@ -27,7 +27,8 @@ try {
   await admin.query(`CREATE DATABASE "${database}" OWNER "${migrationRole}"`);
   await admin.query(`ALTER ROLE "${migrationRole}" SET search_path = public, pg_catalog`);
   await admin.query(`ALTER ROLE "${runtimeRole}" SET search_path = pg_catalog, public`);
-  process.env.APP_ENV = "staging";
+  process.env.APP_ENV = "test";
+  process.env.NODE_ENV = "test";
   process.env.PERSISTENCE_PROVIDER = "POSTGRES";
   process.env.DATABASE_SSL_MODE = "disable";
   process.env.DATABASE_RUNTIME_ROLE = runtimeRole;

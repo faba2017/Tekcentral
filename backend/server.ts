@@ -179,6 +179,7 @@ import { clearCustomerSessionCookie, createCustomerAddress, customerFromSessionT
 import { createHash, randomUUID } from "node:crypto";
 import { applySecurityHeaders, applySensitiveCachePolicy, applyTrustedCors, safeErrorEnvelope, validateCorsPreflight } from "./httpSecurity.js";
 import { validateRuntimeSecurityConfig } from "./runtimeSecurityConfig.js";
+import { proxyDiagnostic } from "./proxyDiagnostics.js";
 import { seedMustekSources } from "./suppliers/mustek/mustekSourceService.js";
 import { seedTvrSources } from "./suppliers/tvr/tvrSourceService.js";
 import { normalizeCurrentTvrSourceVersion, summarizeTvrSemanticReport } from "./suppliers/tvr/tvrSemanticEvidenceService.js";
@@ -581,6 +582,8 @@ function denyCustomerOrderAccess(response: ServerResponse) {
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse) {
   const url = new URL(request.url ?? "/", "http://localhost");
+  const proxyMetadata = proxyDiagnostic(request);
+  if (proxyMetadata) console.info(JSON.stringify(proxyMetadata));
   const secureResponse = response as CorsResponse;
   secureResponse.requestId = randomUUID();
   response.setHeader("X-Request-Id", secureResponse.requestId);

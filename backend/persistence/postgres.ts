@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import pg, { type PoolClient, type QueryResultRow } from "pg";
 import { loadMigrationDatabaseConfig, loadPersistenceConfig } from "./config.js";
+import { postgresSslOptions, sanitizedPostgresConnectionString } from "./databaseTls.js";
 
 const { Pool } = pg;
 let sharedPool: pg.Pool | undefined;
@@ -11,7 +12,7 @@ let coordinationPool: pg.Pool | undefined;
 export function postgresPool() {
   const config = loadPersistenceConfig();
   if (config.provider !== "POSTGRES" || !config.databaseUrl) throw new Error("PostgreSQL persistence is not configured.");
-  sharedPool ??= new Pool({ connectionString: config.databaseUrl, max: config.databasePoolMax, connectionTimeoutMillis: 5_000, idleTimeoutMillis: 30_000, statement_timeout: 15_000, ssl: config.databaseSslMode === "require" ? { rejectUnauthorized: false } : false, application_name: `tekcentral-${config.environment}` });
+  sharedPool ??= new Pool({ connectionString: sanitizedPostgresConnectionString(config.databaseUrl), max: config.databasePoolMax, connectionTimeoutMillis: 5_000, idleTimeoutMillis: 30_000, statement_timeout: 15_000, ssl: postgresSslOptions({ mode: config.databaseSslMode, ca: config.databaseSslCa }), application_name: `tekcentral-${config.environment}` });
   return sharedPool;
 }
 
@@ -20,7 +21,7 @@ export async function query<T extends QueryResultRow = QueryResultRow>(sql: stri
 function postgresCoordinationPool() {
   const config = loadPersistenceConfig();
   if (config.provider !== "POSTGRES" || !config.databaseUrl) throw new Error("PostgreSQL persistence is required for distributed coordination.");
-  coordinationPool ??= new Pool({ connectionString: config.databaseUrl, max: 2, connectionTimeoutMillis: 5_000, idleTimeoutMillis: 30_000, statement_timeout: 15_000, ssl: config.databaseSslMode === "require" ? { rejectUnauthorized: false } : false, application_name: `tekcentral-${config.environment}-coordination` });
+  coordinationPool ??= new Pool({ connectionString: sanitizedPostgresConnectionString(config.databaseUrl), max: 2, connectionTimeoutMillis: 5_000, idleTimeoutMillis: 30_000, statement_timeout: 15_000, ssl: postgresSslOptions({ mode: config.databaseSslMode, ca: config.databaseSslCa }), application_name: `tekcentral-${config.environment}-coordination` });
   return coordinationPool;
 }
 export async function withDistributedLock<T>(lockKey: string, operation: () => Promise<T>): Promise<{ acquired: true; value: T } | { acquired: false }> {
@@ -40,7 +41,7 @@ export async function closePostgres() { if (sharedPool) { const pool = sharedPoo
 
 function postgresMigrationPool() {
   const config = loadMigrationDatabaseConfig();
-  migrationPool ??= new Pool({ connectionString: config.databaseUrl, max: 1, connectionTimeoutMillis: 5_000, idleTimeoutMillis: 10_000, statement_timeout: 60_000, ssl: config.databaseSslMode === "require" ? { rejectUnauthorized: false } : false, application_name: "tekcentral-migration" });
+  migrationPool ??= new Pool({ connectionString: sanitizedPostgresConnectionString(config.databaseUrl), max: 1, connectionTimeoutMillis: 5_000, idleTimeoutMillis: 10_000, statement_timeout: 60_000, ssl: postgresSslOptions({ mode: config.databaseSslMode, ca: config.databaseSslCa }), application_name: "tekcentral-migration" });
   return migrationPool;
 }
 

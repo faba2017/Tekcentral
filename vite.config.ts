@@ -21,6 +21,7 @@ const browserSecurityHeaders = (): Plugin => ({
 
 export default defineConfig({
   plugins: [browserSecurityHeaders(), react()],
+  build: { sourcemap: false },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

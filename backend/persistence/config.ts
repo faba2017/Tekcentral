@@ -1,13 +1,16 @@
+import { loadDatabaseTlsConfig, type DatabaseSslMode, type PersistenceEnvironment } from "./databaseTls.js";
+
 export type PersistenceProvider = "LOCAL" | "POSTGRES";
 export type ObjectStorageProvider = "LOCAL" | "SPACES";
 
 export interface PersistenceConfig {
-  environment: "development" | "test" | "staging" | "production";
+  environment: PersistenceEnvironment;
   provider: PersistenceProvider;
   databaseUrl?: string;
   databaseRuntimeRole?: string;
   databaseMigrationRole?: string;
-  databaseSslMode: "disable" | "require";
+  databaseSslMode: DatabaseSslMode;
+  databaseSslCa?: string;
   databasePoolMax: number;
   objectStorage: {
     provider: ObjectStorageProvider;
@@ -35,7 +38,7 @@ function validateSpacesEndpoint(endpoint: string | undefined, region: string | u
 }
 
 export function loadPersistenceConfig(environment: NodeJS.ProcessEnv = process.env): PersistenceConfig {
-  const runtime = environment.NODE_ENV === "production" ? "production" : environment.APP_ENV === "staging" ? "staging" : environment.NODE_ENV === "test" ? "test" : "development";
+  const runtime: PersistenceEnvironment = environment.APP_ENV === "staging" ? "staging" : environment.NODE_ENV === "production" ? "production" : environment.NODE_ENV === "test" ? "test" : "development";
   const provider = (environment.PERSISTENCE_PROVIDER?.toUpperCase() || "LOCAL") as PersistenceProvider;
   const objectProvider = (environment.OBJECT_STORAGE_PROVIDER?.toUpperCase() || "LOCAL") as ObjectStorageProvider;
   if (!(["LOCAL", "POSTGRES"] as string[]).includes(provider)) throw new Error("PERSISTENCE_PROVIDER must be LOCAL or POSTGRES.");
@@ -64,27 +67,27 @@ export function loadPersistenceConfig(environment: NodeJS.ProcessEnv = process.e
   }
   const legacyAccessKey = environment.OBJECT_STORAGE_ACCESS_KEY?.trim();
   const legacySecretKey = environment.OBJECT_STORAGE_SECRET_KEY?.trim();
+  const databaseTls = loadDatabaseTlsConfig(environment, runtime);
   return {
-    environment: runtime, provider, databaseUrl: environment.DATABASE_URL?.trim(), databaseRuntimeRole: runtimeRole, databaseMigrationRole: migrationRole, databaseSslMode: environment.DATABASE_SSL_MODE === "disable" ? "disable" : "require", databasePoolMax: boundedInteger(environment.DATABASE_POOL_MAX, 10, 1, 50),
+    environment: runtime, provider, databaseUrl: environment.DATABASE_URL?.trim(), databaseRuntimeRole: runtimeRole, databaseMigrationRole: migrationRole, databaseSslMode: databaseTls.mode, databaseSslCa: databaseTls.ca, databasePoolMax: boundedInteger(environment.DATABASE_POOL_MAX, 10, 1, 50),
     objectStorage: { provider: objectProvider, endpoint: environment.OBJECT_STORAGE_ENDPOINT?.trim(), region: environment.OBJECT_STORAGE_REGION?.trim(), publicBucket: environment.OBJECT_STORAGE_PUBLIC_BUCKET?.trim(), privateBucket: environment.OBJECT_STORAGE_PRIVATE_BUCKET?.trim(), publicAccessKey: environment.OBJECT_STORAGE_PUBLIC_ACCESS_KEY?.trim() || legacyAccessKey, publicSecretKey: environment.OBJECT_STORAGE_PUBLIC_SECRET_KEY?.trim() || legacySecretKey, privateAccessKey: environment.OBJECT_STORAGE_PRIVATE_ACCESS_KEY?.trim() || legacyAccessKey, privateSecretKey: environment.OBJECT_STORAGE_PRIVATE_SECRET_KEY?.trim() || legacySecretKey, publicBaseUrl: environment.OBJECT_STORAGE_PUBLIC_BASE_URL?.replace(/\/$/, ""), localRoot: environment.OBJECT_STORAGE_LOCAL_ROOT?.trim() || ".data/object-storage" },
   };
 }
 
 export function loadMigrationDatabaseConfig(environment: NodeJS.ProcessEnv = process.env) {
-  const runtime = environment.NODE_ENV === "production" ? "production" : environment.APP_ENV === "staging" ? "staging" : environment.NODE_ENV === "test" ? "test" : "development";
+  const runtime: PersistenceEnvironment = environment.APP_ENV === "staging" ? "staging" : environment.NODE_ENV === "production" ? "production" : environment.NODE_ENV === "test" ? "test" : "development";
   if (environment.PERSISTENCE_PROVIDER?.toUpperCase() !== "POSTGRES") throw new Error("PostgreSQL persistence is required for migrations.");
-  const runtimeUrl = environment.DATABASE_URL?.trim();
   const runtimeRole = roleName(environment.DATABASE_RUNTIME_ROLE);
   const migrationRole = roleName(environment.DATABASE_MIGRATION_ROLE);
-  const migrationUrl = environment.DATABASE_MIGRATION_URL?.trim() || (runtime === "development" || runtime === "test" ? runtimeUrl : undefined);
+  const migrationUrl = environment.DATABASE_MIGRATION_URL?.trim() || (runtime === "development" || runtime === "test" ? environment.DATABASE_URL?.trim() : undefined);
   if (!migrationUrl) throw new Error("DATABASE_MIGRATION_URL is required for staging/production migrations.");
   if (runtime === "production" || runtime === "staging") {
-    if (!runtimeUrl || !runtimeRole || !migrationRole) throw new Error("DATABASE_URL, DATABASE_RUNTIME_ROLE and DATABASE_MIGRATION_ROLE are required for migration validation.");
-    if (runtimeRole === migrationRole || databaseUsername(migrationUrl) === databaseUsername(runtimeUrl)) throw new Error("Database runtime and migration connection identities must be different.");
-    if (databaseUsername(runtimeUrl) !== runtimeRole) throw new Error("DATABASE_URL must authenticate as DATABASE_RUNTIME_ROLE.");
+    if (!runtimeRole || !migrationRole) throw new Error("DATABASE_RUNTIME_ROLE and DATABASE_MIGRATION_ROLE are required for migration validation.");
+    if (runtimeRole === migrationRole) throw new Error("Database runtime and migration connection identities must be different.");
     if (databaseUsername(migrationUrl) !== migrationRole) throw new Error("DATABASE_MIGRATION_URL must authenticate as DATABASE_MIGRATION_ROLE.");
   }
-  return { databaseUrl: migrationUrl, databaseSslMode: environment.DATABASE_SSL_MODE === "disable" ? "disable" as const : "require" as const, databaseMigrationRole: migrationRole, databaseRuntimeRole: runtimeRole };
+  const databaseTls = loadDatabaseTlsConfig(environment, runtime);
+  return { databaseUrl: migrationUrl, databaseSslMode: databaseTls.mode, databaseSslCa: databaseTls.ca, databaseMigrationRole: migrationRole, databaseRuntimeRole: runtimeRole };
 }
 
 export function productionPersistenceBlockers(environment: NodeJS.ProcessEnv = process.env) { try { loadPersistenceConfig({ ...environment, NODE_ENV: "production" }); return [] as string[]; } catch (error) { return [error instanceof Error ? error.message : "Invalid production persistence configuration."]; } }

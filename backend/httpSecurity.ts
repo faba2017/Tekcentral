@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export type SecurityEnvironment = "development" | "test" | "production" | string | undefined;
+export type BrowserSecurityProfile = "storefront" | "admin";
 
 const payfastFormOrigins = ["https://sandbox.payfast.co.za", "https://www.payfast.co.za"];
 const storefrontScripts = ["https://maps.googleapis.com", "https://maps.gstatic.com", "https://www.google.com/recaptcha/", "https://www.gstatic.com/recaptcha/"];
@@ -34,8 +35,8 @@ const developmentConnectSources = (environment: SecurityEnvironment) => environm
   ? " ws://127.0.0.1:5173 ws://localhost:5173"
   : "";
 
-export function contentSecurityPolicy(pathname: string, publicMediaBaseUrl = process.env.OBJECT_STORAGE_PUBLIC_BASE_URL, environment: SecurityEnvironment = process.env.NODE_ENV) {
-  const admin = pathname === "/api/admin" || pathname.startsWith("/api/admin/") || pathname.startsWith("/admin");
+export function contentSecurityPolicy(pathname: string, publicMediaBaseUrl = process.env.OBJECT_STORAGE_PUBLIC_BASE_URL, environment: SecurityEnvironment = process.env.NODE_ENV, profile?: BrowserSecurityProfile) {
+  const admin = profile === "admin" || (!profile && (pathname === "/api/admin" || pathname.startsWith("/api/admin/") || pathname.startsWith("/admin")));
   const mediaOrigin = externalPublicMediaOrigin(publicMediaBaseUrl);
   const apiOrigins = configuredApiOrigins(environment);
   const directives = admin
@@ -60,16 +61,16 @@ export function contentSecurityPolicy(pathname: string, publicMediaBaseUrl = pro
   directives.push(
     "object-src 'none'",
     "base-uri 'self'",
-    `form-action 'self' ${payfastFormOrigins.join(" ")}`,
+    admin ? "form-action 'self'" : `form-action 'self' ${payfastFormOrigins.join(" ")}`,
     "frame-ancestors 'none'",
   );
   if (environment === "production") directives.push("upgrade-insecure-requests");
   return directives.join("; ");
 }
 
-export function securityHeaders(pathname: string, environment: SecurityEnvironment = process.env.NODE_ENV) {
+export function securityHeaders(pathname: string, environment: SecurityEnvironment = process.env.NODE_ENV, profile?: BrowserSecurityProfile) {
   return {
-    "Content-Security-Policy": contentSecurityPolicy(pathname, process.env.OBJECT_STORAGE_PUBLIC_BASE_URL, environment),
+    "Content-Security-Policy": contentSecurityPolicy(pathname, process.env.OBJECT_STORAGE_PUBLIC_BASE_URL, environment, profile),
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "strict-origin-when-cross-origin",
@@ -78,8 +79,8 @@ export function securityHeaders(pathname: string, environment: SecurityEnvironme
   };
 }
 
-export function applySecurityHeaders(response: ServerResponse, pathname: string, environment: SecurityEnvironment = process.env.NODE_ENV) {
-  for (const [name, value] of Object.entries(securityHeaders(pathname, environment))) response.setHeader(name, value);
+export function applySecurityHeaders(response: ServerResponse, pathname: string, environment: SecurityEnvironment = process.env.NODE_ENV, profile?: BrowserSecurityProfile) {
+  for (const [name, value] of Object.entries(securityHeaders(pathname, environment, profile))) response.setHeader(name, value);
 }
 
 export function isSensitiveApiPath(pathname: string) {

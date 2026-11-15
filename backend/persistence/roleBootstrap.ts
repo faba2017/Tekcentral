@@ -1,5 +1,6 @@
 import pg from "pg";
 import { loadMigrationDatabaseConfig } from "./config.js";
+import { postgresSslOptions, sanitizedPostgresConnectionString } from "./databaseTls.js";
 
 const { Client } = pg;
 const safeRole = (value: string | undefined, label: string) => {
@@ -17,7 +18,7 @@ export async function bootstrapPersistenceRoles(environment: NodeJS.ProcessEnv =
   const config = loadMigrationDatabaseConfig(environment);
   const migrationRole = safeRole(config.databaseMigrationRole, "DATABASE_MIGRATION_ROLE");
   const runtimeRole = safeRole(config.databaseRuntimeRole, "DATABASE_RUNTIME_ROLE");
-  const client = new Client({ connectionString: config.databaseUrl, ssl: config.databaseSslMode === "require" ? { rejectUnauthorized: false } : false, application_name: "tekcentral-role-bootstrap" });
+  const client = new Client({ connectionString: sanitizedPostgresConnectionString(config.databaseUrl), ssl: postgresSslOptions({ mode: config.databaseSslMode, ca: config.databaseSslCa }), application_name: "tekcentral-role-bootstrap" });
   await client.connect();
   try {
     const identity = await client.query<{ current_user: string }>("SELECT current_user");

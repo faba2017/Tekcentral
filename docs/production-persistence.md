@@ -119,4 +119,4 @@ Production web instances do not start supplier/FX schedulers. Scheduled work run
 
 ## Health and shutdown
 
-`GET /live` proves the process is alive. `GET /ready` checks required persistence configuration, PostgreSQL connectivity and object-storage bucket access. Supplier/provider outages do not fail global readiness. SIGTERM/SIGINT stops new requests, allows bounded drain and closes PostgreSQL connections.
+`GET /live` proves the process is alive. `GET /ready` checks required persistence configuration, PostgreSQL connectivity and object-storage bucket access. Supplier/provider outages do not fail global readiness. SIGTERM/SIGINT stops new requests, allows bounded drain and closes PostgreSQL connections. Staging/production PostgreSQL uses `DATABASE_SSL_MODE=verify-full` with one deployment-owned CA source (`DATABASE_SSL_CA`, `DATABASE_SSL_CA_BASE64`, or `DATABASE_SSL_CA_FILE`); missing CA or non-verifying TLS fails closed. Local PostgreSQL may use `disable`.

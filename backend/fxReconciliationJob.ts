@@ -54,7 +54,8 @@ function deriveFxPricingAttentionProductIds(impacts: Awaited<ReturnType<typeof g
 export function deriveFxPricingAttentionCount(impacts: Parameters<typeof deriveFxPricingAttentionProductIds>[0], proposals: Parameters<typeof deriveFxPricingAttentionProductIds>[1]) { return deriveFxPricingAttentionProductIds(impacts, proposals).length; }
 export function startFxReconciliationScheduler(options?: { enabled?: boolean; runImmediately?: boolean; appRole?: string }) {
   const roleEligible = (options?.appRole ?? process.env.APP_ROLE) === "worker";
-  const enabled = roleEligible && (options?.enabled ?? (process.env.NODE_ENV === "production" || process.env.FX_SCHEDULER_ENABLED === "true"));
+  const configured = process.env.FX_SCHEDULER_ENABLED;
+  const enabled = roleEligible && (options?.enabled ?? (configured === undefined ? process.env.NODE_ENV === "production" : configured === "true"));
   if (!enabled) return { enabled: false, stop: () => undefined };
   let timer: NodeJS.Timeout | undefined; let stopped = false;
   const schedule = async () => { if (stopped) return; const hours = (await getBusinessSettings()).pricing.fxScheduledReconciliationHours; if (stopped) return; timer = setTimeout(async () => { await runFxPricingReconciliation({ trigger: "SCHEDULED" }).catch(() => undefined); await schedule(); }, hours * 3_600_000); timer.unref(); };
