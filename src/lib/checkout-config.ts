@@ -1,16 +1,6 @@
 import type { DeliveryMethod, OrderTotals, PaymentMethod } from "@/types/order";
 
-export const southAfricanProvinces = [
-  "Eastern Cape",
-  "Free State",
-  "Gauteng",
-  "KwaZulu-Natal",
-  "Limpopo",
-  "Mpumalanga",
-  "Northern Cape",
-  "North West",
-  "Western Cape",
-];
+export { southAfricanProvinces } from "@/lib/customer-address";
 
 export const deliveryMethods: DeliveryMethod[] = [
   {

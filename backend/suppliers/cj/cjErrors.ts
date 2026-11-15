@@ -14,6 +14,7 @@ export class CjApiError extends Error {
     public code: CjErrorCode,
     message: string,
     public requestId?: string,
+    public retryAfterMs?: number,
   ) {
     super(message);
   }

@@ -3,6 +3,7 @@ import type { SupplierOffer } from "../../supplierDomain.js";
 import type { SupplierProductMapping } from "../../types.js";
 import { syncScoopCatalogueProducts } from "./scoopCatalogueRepository.js";
 import type { ScoopCatalogueProduct, ScoopFeedParseResult } from "./scoopTypes.js";
+import { getIntegrationPolicySettings } from "../../businessSettingsRepository.js";
 
 export const SCOOP_XML_FEED_URL = "https://scoop.co.za/scoop_pricelist.xml";
 const SCOOP_VAT_RATE = 0.15;
@@ -93,7 +94,7 @@ function extractFeedTimestamp(xml: string) {
   );
 }
 
-export function parseScoopPricelistXml(xml: string): ScoopFeedParseResult {
+export function parseScoopPricelistXml(xml: string, feedUrl = SCOOP_XML_FEED_URL): ScoopFeedParseResult {
   const rootTag = extractRootTag(xml);
   const products: ScoopFeedParseResult["products"] = [];
   let itemTag: string | undefined;
@@ -149,14 +150,14 @@ export function parseScoopPricelistXml(xml: string): ScoopFeedParseResult {
             retailPrice: "INCLUDING_VAT",
           },
           sourceMetadata: {
-            feedUrl: SCOOP_XML_FEED_URL,
+            feedUrl,
             xmlRootTag: rootTag,
             xmlItemTag: match[1],
             sourceFields: Object.fromEntries(fields.entries()),
           },
           sourceObservations: [{
             sourceType: "XML_FEED",
-            sourceReference: SCOOP_XML_FEED_URL,
+            sourceReference: feedUrl,
             firstSeenAt: now,
             lastSeenAt: now,
             lastSuccessfulRefreshAt: now,
@@ -178,11 +179,12 @@ export function parseScoopPricelistXml(xml: string): ScoopFeedParseResult {
   return { products, xmlRootTag: rootTag, xmlItemTag: itemTag, sourceFeedTimestamp };
 }
 
-export async function fetchScoopPricelistXml(fetchImpl: typeof fetch = fetch) {
+export async function fetchScoopPricelistXml(fetchImpl: typeof fetch = fetch, configuredFeedUrl?: string) {
+  const scoopFeedUrl = configuredFeedUrl ?? (await getIntegrationPolicySettings()).scoopFeedUrl;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FEED_TIMEOUT_MS);
   try {
-    const response = await fetchImpl(SCOOP_XML_FEED_URL, { signal: controller.signal });
+    const response = await fetchImpl(scoopFeedUrl, { signal: controller.signal, headers: { accept: "application/xml,text/xml" } });
     if (!response.ok) {
       throw new ScoopFeedError(
         "SCOOP_FEED_UNAVAILABLE",
@@ -199,7 +201,8 @@ export async function fetchScoopPricelistXml(fetchImpl: typeof fetch = fetch) {
 }
 
 export async function fetchAndParseScoopPricelist(fetchImpl: typeof fetch = fetch) {
-  return parseScoopPricelistXml(await fetchScoopPricelistXml(fetchImpl));
+  const { scoopFeedUrl } = await getIntegrationPolicySettings();
+  return parseScoopPricelistXml(await fetchScoopPricelistXml(fetchImpl, scoopFeedUrl), scoopFeedUrl);
 }
 
 export async function syncScoopCatalogueFromFeed(fetchImpl: typeof fetch = fetch) {

@@ -1,0 +1,7 @@
+import type { PeriodId } from "@/lib/analytics";
+import { periodOptions } from "@/lib/analytics";
+
+export function ReportPeriodControl({ period, from, to, allowCustom = true, onChange }: { period: PeriodId; from?: string; to?: string; allowCustom?: boolean; onChange: (next: { period: PeriodId; from?: string; to?: string }) => void }) {
+  const options = allowCustom ? periodOptions : periodOptions.filter((option) => option.id !== "CUSTOM");
+  return <div className="flex flex-wrap items-end gap-2"><label className="text-xs font-black uppercase text-[#667085]">Period<select value={period} onChange={(event) => onChange({ period: event.target.value as PeriodId, from, to })} className="mt-1 h-10 rounded-md border border-[#D0D5DD] bg-white px-3 text-sm font-bold normal-case">{options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>{period === "CUSTOM" && <><label className="text-xs font-black uppercase text-[#667085]">From<input type="date" value={from ?? ""} onChange={(event) => onChange({ period, from: event.target.value, to })} className="mt-1 block h-10 rounded-md border border-[#D0D5DD] px-3 text-sm normal-case" /></label><label className="text-xs font-black uppercase text-[#667085]">To<input type="date" value={to ?? ""} onChange={(event) => onChange({ period, from, to: event.target.value })} className="mt-1 block h-10 rounded-md border border-[#D0D5DD] px-3 text-sm normal-case" /></label></>}</div>;
+}

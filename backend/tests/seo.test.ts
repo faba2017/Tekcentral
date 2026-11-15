@@ -1,0 +1,10 @@
+import assert from "node:assert/strict";
+import { buildRobots, buildSitemap } from "../seoService.js";
+process.env.PUBLIC_STOREFRONT_ORIGIN = "https://tekcentral.co.za";
+const sitemap = await buildSitemap([{ slug: "published-router", categorySlug: "networking", categoryId: "CAT_NETWORKING", subcategoryId: "SUB_ACCESS_POINTS", productTypeId: "TYPE_INDOOR_ACCESS_POINTS" }]);
+assert.match(sitemap, /https:\/\/tekcentral\.co\.za\/product\/published-router/);
+assert.match(sitemap, /https:\/\/tekcentral\.co\.za\/shop\/networking/);
+assert.match(sitemap, /https:\/\/tekcentral\.co\.za\/shop\/networking\/access-points\/indoor-access-points/);
+assert.doesNotMatch(sitemap, /admin|checkout|account/);
+const robots = buildRobots(); assert.match(robots, /Disallow: \/admin\//); assert.match(robots, /Sitemap: https:\/\/tekcentral\.co\.za\/sitemap\.xml/);
+console.log("SEO tests passed");

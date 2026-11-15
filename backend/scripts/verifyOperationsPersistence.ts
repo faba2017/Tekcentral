@@ -1,0 +1,1 @@
+import{readLegacyOperations,verifyOperations}from"../persistence/operationsMigration.js";const result=await verifyOperations(await readLegacyOperations());console.log(JSON.stringify(result,null,2));if(!result.success)process.exitCode=1;

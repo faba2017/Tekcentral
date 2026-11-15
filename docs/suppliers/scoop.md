@@ -1,5 +1,21 @@
 # Scoop Distribution
 
+Scoop operations are organized through the Supplier Hub. The Scoop workspace owns feed/catalogue operations, supplier-product evidence, mappings, stock observations, launch-source operations, synchronization status, health, and links to filtered Supplier Orders. Settings owns shared supplier policy; public Product lifecycle remains under Products.
+
+## Selected-offer mapping completion
+
+- Selected-for-launch offers remain selected while mapping is completed.
+- Existing TekCentral Products are searched by exact manufacturer/model,
+  supplier aliases and source provenance before another Product is created.
+- Fuzzy title or product-family similarity is never sufficient for automatic
+  verification.
+- Creating a Product from an exact Scoop offer is idempotent, records immutable
+  source-offer provenance, and creates a HIGH-confidence VERIFIED mapping.
+- Mapping completion reuses existing logistics observations and advances to one
+  current pricing proposal without approving or publishing it.
+- Products remain supplier-independent; Scoop identity stays in SupplierOffer,
+  mapping and provenance records rather than customer-facing product identity.
+
 ## Paid-order procurement
 
 Scoop is a manual procurement supplier. Its operational channel is the Scoop
@@ -234,10 +250,129 @@ structured failure reasons. Operational
 coverage emphasizes verified mappings, verified in-stock mappings and complete
 shipping-ready mapped offers rather than implying the entire feed is ready.
 
-Launch-focused runs return per-SKU identity, source, confidence, shipping basis,
-quality state, failure reason and whether completion cleared the logistics
-readiness blocker. Manual overrides remain an exception when authoritative
-automatic data cannot complete the record.
+Launch-focused runs are bounded to selected, verified, logistics-incomplete
+offers (maximum 25). They return per-SKU identity, evidence attempted, source,
+confidence, product/package measurements, shipping basis, quality state,
+failure reason, pricing outcome and next action. Completion reuses the existing
+pricing proposal service and never auto-approves a proposal. Revision-specific
+measurements are not applied when the exact hardware revision is unresolved;
+`CD-WR1200` remains mapped and reports `HARDWARE_REVISION_REQUIRED` until an
+authoritative Scoop capture or manufacturer label confirms its revision.
+Manual page capture or an admin override remains an explicit staff exception
+when authoritative automatic data cannot complete the record.
+
+### Scoop Product-Page Logistics
+
+The Scoop workspace can ingest physical specifications from an exact public
+Scoop product page without changing XML-backed dealer cost, retail price, stock,
+branch stock or commercial description. Automatic application requires a
+canonical `scoop.co.za` URL and `HIGH` identity confidence. Successful page
+observations use `SUPPLIER_PRODUCT_PAGE`, retain the source URL, capture time,
+content fingerprint and extraction confidence, and are cached for 30 days.
+
+Retrieval uses a normal public request only. HTTP 403, challenge pages and rate
+limits are recorded as structured failures and are never bypassed. Staff may
+paste an approved public-page HTML or text capture, preview the parsed identity,
+product/package/component measurements and shipping basis, then explicitly
+apply it. Reapplying identical content is idempotent.
+
+Product and package measurements remain independent. A complete authoritative
+package observation supplies the shipping basis; otherwise a complete product
+observation is marked `PRODUCT_DIMENSIONS_FALLBACK`. Kit component measurements
+are retained separately and are never combined into a fabricated carton.
+Manufacturer and Scoop-page observations coexist, and an `ADMIN` override stays
+highest priority. Targeted page-ingestion batches use the existing launch,
+mapping, missing-logistics and manufacturer scopes, process at most 25 SKUs, and
+never crawl the full catalogue by default.
+
+### Launch Logistics Evidence Queue
+
+`Scoop → Logistics exceptions` is the staff queue for selected, verified offers
+whose effective logistics state is incomplete. It shows the exact stored
+failure and keeps source capture on the same screen. Staff may paste text or
+relevant HTML from the exact Scoop product page, an official manufacturer page
+or datasheet, or an approved internal capture. Retailer evidence is rejected.
+
+Analyze is read-only. It verifies exact identity, previews product and package
+measurements separately, reports remaining evidence, and flags conflicts with
+an existing authoritative observation. Apply requires high identity confidence
+and explicit conflict confirmation. Identical fingerprints remain idempotent.
+An exact Scoop capture is also passed through canonical URL reconciliation and
+its normalized content specifications/documents are retained as reviewable
+publication suggestions; the raw page is not retained and nothing is published
+automatically.
+
+`CD-WR1200` accepts revision evidence separately from measurements. Confirming
+the revision retains the verified product mapping and re-runs the existing
+manufacturer provider; revision-specific values remain blocked until that
+confirmation. Manual `ADMIN` measurements remain a last-resort exception and
+must retain an evidence reference and staff rationale in the audit trail.
+
+After evidence application, effective logistics, pricing proposal availability,
+launch readiness and the primary next action are recalculated. Complete offers
+leave the exception queue; pending pricing remains a staff `Review pricing`
+decision and blocking pricing warnings are preserved.
+
+### Canonical Scoop Product URLs
+
+`productPageResolution.productPageUrl` is the exact public Scoop product page
+for one canonical `SCOOP:<sku>` offer. Its metadata records `VERIFIED`,
+`REVIEW_REQUIRED`, `UNKNOWN` or `CONFLICT`, the URL source, identity confidence,
+verification/check timestamps and prior URL history. Manufacturer, image, feed,
+procurement and catalogue landing-page URLs are not canonical product URLs.
+
+Authority order is: a previously verified URL, an exact trusted Phase 9E website
+observation, a trusted SKU-to-URL import, an exact staff URL verified from page
+content, then safe exact discovery. Automatic persistence requires `HIGH`
+identity confidence. Conflicting URLs for one SKU, or one URL claimed by
+multiple SKUs, are not applied silently.
+
+Website imports run an idempotent canonical-URL backfill. Separate URL-mapping
+CSV/JSON imports provide `ADD`, `KEEP`, `CHANGE_REVIEW`, `CONFLICT` and `REJECT`
+preview actions before safe mappings are applied. URL identity and fetch
+accessibility are independent: a verified URL remains verified when Scoop
+returns HTTP 403, while logistics ingestion records `SOURCE_BLOCKED`. Staff can
+open that public page and use the existing page-capture preview/apply workflow.
+No cookies, sessions, credentials or Cloudflare bypass are used.
+
+## Managed Launch Cohort
+
+Launch Readiness is not a second catalogue. It contains only verified mappings
+with an internal TekCentral product that are explicitly selected for launch, or
+published/unpublished products already inside the managed publication lifecycle.
+Unmapped and unselected candidates remain in Catalogue until staff explicitly
+select them.
+
+Readiness and publication are displayed independently. A ready first launch is
+sent to publish review; a clean published product links to the storefront; a
+published product with draft changes links to change review; and an unpublished
+historical product links to republish review. Publication never occurs
+automatically.
+
+Pricing presentation is derived from the active immutable public version and the
+newest active proposal: pending proposals need approval, approved non-live prices
+await publication, matching approved/public prices are live, and differing
+approved prices remain pending publication.
+
+### Product Workflow Guidance
+
+Scoop product operations use one derived workflow sequence: match or create the
+internal product, verify mapping, complete logistics, approve pricing, explicitly
+select for launch, review publication, then publish. Catalogue rows, the selected
+product workspace and Launch Readiness use the same primary next action. Launch
+selection and publication always remain explicit staff actions.
+
+The selected workspace presents mapping, logistics, pricing, launch selection
+and publication consistently. Exact-SKU searches in Launch Readiness can explain
+that an otherwise complete product is excluded because it is not selected, and
+can select it without losing SKU context. Published products lead to their
+storefront instead of repeating first-publication actions.
+
+Canonical Scoop URL verification requires the exact observed page SKU. A trusted
+import without page identity remains review-required; a different observed SKU
+is a conflict. Quarantining an incorrect URL preserves URL history and valid
+manufacturer logistics while removing any supplier-page logistics observation
+that came from the mismatched product.
 
 ## Mapping And Pricing Preparation
 
@@ -288,6 +423,44 @@ The Launch Readiness view combines these states while retaining Scoop SKU as the
 stable supplier identity. Supplier cost and offer identity remain internal. No
 readiness action writes to the storefront or creates a supplier order.
 
+The selected-cohort completion view includes every explicitly selected offer,
+including unmapped offers. It derives one completion state, exact blockers and
+one primary next action from the shared workflow. Public-content eligibility is
+checked after source readiness; a missing controlled image or other required
+public field remains a staff-review blocker. Canonical Scoop URL status stays
+visible as provenance, but an unresolved or conflicting URL does not block a
+product whose authoritative logistics and all other publication checks pass.
+
+The current controlled assortment has eleven selected offers. `ACB-ISP` remains
+published at R840 and `AF-11` is ready for publish review with its exact Scoop
+feed image ingested and manufacturer logistics retained. The other nine offers
+remain blocked at mapping until staff matches or creates the exact internal
+product: `CC-W6`, `CD-WR1200`, `FB-T1`, `FF-SCLC-S1A`, `RG-ES228GP`, `T50R`,
+`TERM-JACK`, `U7-LR`, and `UPOE48-30W`. No equivalence is inferred; in
+particular, `CD-WR1200` still requires exact hardware-revision confirmation.
+
+## Product Content Enrichment
+
+Exact Scoop product-page captures can produce a review-only content preview for
+overview copy, structured technical specifications and trusted documents. The
+preview requires the page SKU to match the mapped Scoop SKU. Pricing, reviews,
+ratings, related-product content and package measurements are excluded from
+public content.
+
+Staff content has priority over approved source-derived content, which has
+priority over automatic fallback copy. Safe additions can be applied to the
+publication draft, but same-label value disagreements remain visible for staff
+review and no refresh overwrites a staff-edited overview. Manufacturer or exact
+Scoop product measurements may be represented as public dimensions and weight;
+package measurements remain internal shipping data.
+
+Content status is derived as `CONTENT_MISSING`, `CONTENT_BASIC`,
+`CONTENT_ENRICHED` or `CONTENT_REVIEW_REQUIRED`. Specifications and documents
+improve content quality but are not universally required for first publication.
+Accepted overview, specifications, documents and provenance become public only
+when staff explicitly publishes a new immutable version. Scoop reviews are not
+imported and the storefront does not render an empty reviews section.
+
 ## Mapping Quality And Product Creation
 
 Scoop mapping suggestions carry `HIGH`, `MEDIUM` or `LOW` confidence with
@@ -326,3 +499,17 @@ supplier costs publicly or schedule background feed jobs.
 - Dropshipping and blind shipping
 - Reseller discounts and credit account terms
 - Shipping arrangements
+# Product Content Drafts
+
+Publication maintenance keeps browser editor state, the backend-persisted saved draft, and the immutable active storefront version separate. `Save draft` never changes the storefront. Draft preview renders the saved candidate; publishing creates a new active version from that candidate. Uploaded or trusted-imported PDFs are content-addressed TekCentral assets and remain draft-only until publication.
+# Catalogue workflow boundaries
+
+- The Scoop XML feed remains authoritative for supplier stock, dealer cost, and offer freshness. Product publication and Product-page verification never make an absent XML offer fresh.
+- `Generate proposal` requires an exact verified mapping, a canonical TekCentral Product, and an active current XML dealer-cost observation. It creates or reuses a pending proposal only; it does not verify mappings, approve pricing, publish, or create a Product version.
+- Product-page enrichment accepts only public HTTPS `scoop.co.za` Product URLs. Account, login, checkout, cart, session, token, and customer URLs are rejected; backend fetches never reuse browser cookies.
+- Public-page fetches use an eight-second timeout, a 2 MiB response limit, bounded redirects with host revalidation, and normalized diagnostics. Raw fetched HTML is never rendered.
+- Exact page SKU identity is required before specifications, documents, or logistics evidence can be accepted. The common labelled More Information table is normalized without replacing curated public Product copy.
+- Manual logistics remains effective until staff explicitly accepts verified authoritative extraction. Failed, incomplete, or mismatched extraction does not overwrite it.
+# Catalogue enrichment
+
+Scoop category and Product evidence uses the shared canonical suggestion service. Suggestions are advisory and staff-overridable. Supplier image URLs remain private candidates until controlled Product-media ingestion.

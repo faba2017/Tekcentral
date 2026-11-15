@@ -21,30 +21,46 @@ import {
   saveSupplierProductMapping,
   setSupplierProductMappingStatus,
 } from "../supplierProductMappingRepository.js";
-import { applyPricingRounding, calculateManualPriceOverride, calculateProposedPrice, cjLandedCostPricingInput, classifyPricingWarning, prepareSupplierPricing, scoopPricingInput, TARGET_MARGIN_TOLERANCE_PERCENTAGE_POINTS } from "../supplierPricing.js";
-import { defaultPricingSettings, defaultShippingSettings, getBusinessSettings, normalizeShippingSettings, updatePricingSettings, updateShippingSettings } from "../businessSettingsRepository.js";
+import { applyPricingRounding, applyPricingRoundingAtOrAbove, calculateManualPriceOverride, calculateProposedPrice, cjLandedCostPricingInput, classifyPricingWarning, prepareSupplierPricing, scoopPricingInput, TARGET_MARGIN_TOLERANCE_PERCENTAGE_POINTS } from "../supplierPricing.js";
+import { defaultNotificationSettings, defaultPricingSettings, defaultShippingSettings, getAutomationSettingsView, getBusinessSettings, getEffectiveNotificationSettings, getPricingSettingsView, getProductPolicySettings, getSettingsDomain, getSettingsHistory, getShippingSettingsView, getSupplierPolicySettings, normalizeShippingSettings, patchAutomationSettings, patchPricingSettings, patchSettingsDomain, patchShippingSettings, SettingsConflictError, updateNotificationSettings, updatePricingSettings, updateShippingSettings } from "../businessSettingsRepository.js";
+import { getSystemHealth } from "../systemHealthService.js";
+import { getPaymentSettings, getPayfastProfileStatus, mapPayfastStatus, paymentGatewayRegistry, testPayfastConfiguration, updatePayfastSettings } from "../payments/paymentGateway.js";
 import { applyShippingPolicy, createShippingOptions, createShippingOptionsResult, publicShippingQuote, requireShippingQuote, selectCustomerSafeCjRoute, testScoopZoneEstimate } from "../shippingService.js";
 import { saveShippingQuote } from "../shippingQuoteRepository.js";
 import { classifyGoogleAddressValidationFailure, normalizeGoogleValidatedAddress, validateDeliveryAddress } from "../addressValidation.js";
 import { calculateFreightReconciliation, calculateVolumetricWeightKg, estimateLocalShipping, LocalShippingEstimateError, resolveLocalShippingZone, resolveLocalShippingZoneMatch, roundShippingCharge, type LocalShippingRateCard } from "../localShippingEstimator.js";
 import { findIngestedPublicImage, ingestPublicProductImage, publicImageContentType, readPublicProductImage } from "../publicImageIngestion.js";
+import { importPublicDocument, readPublicDocument, uploadPublicDocument } from "../publicDocumentStorage.js";
 import { defaultSeoTitle, preparePublicationContentDefaults } from "../publicationContentDefaults.js";
 import { hasMaterialPublicChanges } from "../publicationSnapshot.js";
+import { availabilityFreshness, availabilityPurchasable, quantityAvailability, resolveProductAvailability } from "../productAvailability.js";
 import { isCompleteSouthAfricanAddress, parseGoogleAddressComponents } from "../../src/lib/google-address.js";
-import { listPricingProposals, savePricingProposal, setPricingProposalStatus } from "../pricingProposalRepository.js";
+import { adminSectionForPath } from "../../src/lib/admin-navigation.js";
+import { canApprovePricingProposal, derivePricingPresentation, getPricingProposal, listPricingProposals, savePricingProposal, setPricingProposalStatus } from "../pricingProposalRepository.js";
 import { createPricingOverride, generateScoopPricingProposal, previewPricingOverride } from "../pricingService.js";
+import { FrankfurterEcbFxProvider, fxQuoteStatus, getFxRate, refreshFxRate, resetFxInflightForTests } from "../fxRateService.js";
+import { getStoredFxQuote, saveFxQuote } from "../fxRateRepository.js";
+import { calculateMarginAtPrice, classifyFxImpact, evaluateFxImpact, reconcileForeignCurrencyPricingImpact, shouldAutoGenerateFxProposal } from "../fxImpactService.js";
+import { listFxPricingImpacts, saveFxPricingImpact } from "../fxImpactRepository.js";
+import { deriveFxPricingAttentionCount, discoverRequiredFxPairs, runFxPricingReconciliation, startFxReconciliationScheduler } from "../fxReconciliationJob.js";
 import { CjAuthService } from "../suppliers/cj/cjAuthService.js";
 import { CjApiError } from "../suppliers/cj/cjErrors.js";
 import {
+  applyCjProductDetailPricing,
   extractProductList,
   normalizeCjCategories,
   normalizeCjProduct,
   normalizeCjStock,
   normalizeCjVariant,
+  selectCjExactVariantPrice,
 } from "../suppliers/cj/cjProductMapper.js";
-import { saveCjCatalogueProduct, getCjCatalogueProduct, listCjCatalogueProducts } from "../suppliers/cj/cjCatalogueRepository.js";
+import { confirmCjCatalogueCurrency, saveCjCatalogueProduct, getCjCatalogueProduct, listCjCatalogueProducts } from "../suppliers/cj/cjCatalogueRepository.js";
+import { confirmCjAccountCurrency, getCjEvidenceSettings } from "../suppliers/cj/cjEvidenceSettingsRepository.js";
+import { cjVariantToSupplierOffer, confirmCjProcurementCost, confirmCjVariantLogistics, createTekCentralProductFromCj, deriveCjPricingEvidence, exactCjProductIdentityMatches, getCjVariantLaunchReadiness, historicalCjMappingReviewStatus, mapCjVariantToExistingProduct, previewCjProductMapping, sanitizeCjProductContent, selectCjEvidenceVariant, setCjVariantLaunchState, verifyCjVariantEvidence } from "../suppliers/cj/cjLaunchPipeline.js";
 import {
   checkCjMappingStalenessById,
+  refreshCjVariantAvailability,
+  refreshCjVariantSourcePrice,
   searchCjProducts,
   suggestCjMapping,
   verifySupplierMappingById,
@@ -72,6 +88,7 @@ import {
   releaseOperationalHold,
   setOperationalHold,
   updateAdminOrderStatus,
+  updateShipment,
   updateAdminRefundStatus,
   updateAdminReturnStatus,
 } from "../adminOperations.js";
@@ -91,9 +108,10 @@ import {
 } from "../supplierOrchestration.js";
 import { supplierAdapters } from "../mockSupplierAdapters.js";
 import { getSupplierProductMappingById } from "../supplierProductMappingRepository.js";
-import { getSupplierRegistryEntry } from "../supplierRegistry.js";
+import { getSupplierRegistryEntry, operationalSupplierIds } from "../supplierRegistry.js";
+import { getSupplierHub } from "../supplierHubService.js";
 import { hasCapability, requireCapability, supplierOfferFromMapping } from "../supplierDomain.js";
-import { getSupplierOrderNotification, notifyNewScoopActionRequired, retryScoopActionRequiredNotification } from "../internalNotificationService.js";
+import { buildFxPricingEmail, classifyNotificationFailure, getSupplierOrderNotification, notifyFxPricingImpact, notifyNewScoopActionRequired, retryFxPricingNotification, retryScoopActionRequiredNotification, sendSettingsNotificationTest } from "../internalNotificationService.js";
 import type { MailMessage } from "../mailService.js";
 import {
   buildCjFreightRequest,
@@ -103,6 +121,7 @@ import {
   normalizeSouthAfricanConsigneeIdForCj,
   normalizeSouthAfricanPhoneForCj,
   prepareCjOrderPreflight,
+  resetCjDeliveryCheckCacheForTests,
   reconcileCjOrder,
   removeCjOperationalConsigneeId,
   refreshCjOrderStatus,
@@ -118,21 +137,27 @@ import {
   listScoopLogisticsAudit,
   listScoopCatalogueProducts,
   saveScoopAdminLogistics,
+  saveScoopCatalogueProduct,
   setScoopLaunchAssortmentState,
   syncScoopCatalogueProducts,
   scoopIdentityConflict,
 } from "../suppliers/scoop/scoopCatalogueRepository.js";
 import { deriveScoopLogisticsStatus, effectiveScoopLogisticsMetadata, validateScoopLogisticsValues } from "../suppliers/scoop/scoopLogisticsMetadata.js";
-import { deriveScoopLaunchReadiness, latestScoopProposal, scoopCandidateReasons, suggestScoopLaunchCandidates } from "../suppliers/scoop/scoopLaunchReadiness.js";
+import { deriveScoopLaunchReadiness, deriveScoopProductWorkflow, deriveScoopPublicationAction, isInScoopLaunchReadinessCohort, isSelectedScoopLogisticsException, latestScoopProposal, scoopCandidateReasons, suggestScoopLaunchCandidates } from "../suppliers/scoop/scoopLaunchReadiness.js";
 import { applyScoopLogisticsCsv, exportMissingScoopLogisticsCsv, previewScoopLogisticsCsv } from "../suppliers/scoop/scoopLogisticsCsv.js";
-import { acquireScoopManufacturerLogistics, matchesScoopManufacturerAlias, normalizeDimension, normalizeWeight, type ScoopManufacturerMetadataProvider } from "../suppliers/scoop/scoopManufacturerLogistics.js";
-import { createTekCentralProductFromScoop, requireWeakMappingConfirmation, scoreScoopProductMatch, suggestScoopCategory, suggestScoopProductTitles } from "../suppliers/scoop/scoopProductCreation.js";
+import { acquireScoopManufacturerLogistics, manufacturerIdentityFailure, matchesScoopManufacturerAlias, normalizeDimension, normalizeWeight, type ScoopManufacturerMetadataProvider } from "../suppliers/scoop/scoopManufacturerLogistics.js";
+import { applyScoopPageLogistics, extractScoopHardwareRevision, fetchScoopPageLogistics, parseScoopPageLogistics, previewScoopPageLogistics } from "../suppliers/scoop/scoopPageLogistics.js";
+import { manufacturerContentDocuments, parseScoopProductContent, previewScoopProductContent, productPhysicalSpecifications } from "../suppliers/scoop/scoopProductContent.js";
+import { deriveProductContentStatus, mergeProductSpecifications, normalizeSpecificationLabel } from "../productContent.js";
+import { createTekCentralProductFromScoop, exactScoopProductIdentityMatches, requireWeakMappingConfirmation, scoreScoopProductMatch, suggestScoopCategory, suggestScoopProductTitles } from "../suppliers/scoop/scoopProductCreation.js";
 import { applyScoopWebsiteImport, discoverScoopWebsiteProducts, previewScoopWebsiteImport } from "../suppliers/scoop/scoopWebsiteImport.js";
-import { getInternalProduct } from "../internalProductRepository.js";
-import { derivePublicationEligibility, getPublicationPreview, getPublicationReview, getPublicationSummary, getPublicProductBySlug, listPublicProducts, publishProduct, rollbackProduct, unpublishProduct } from "../productPublicationRepository.js";
+import { applyScoopStaffUrl, applyScoopUrlImport, backfillScoopCanonicalUrls, normalizeScoopProductUrl, previewScoopStaffUrl, previewScoopUrlImport, quarantineScoopCanonicalUrl } from "../suppliers/scoop/scoopUrlReconciliation.js";
+import { getInternalProduct, listAdminProducts, setInternalProductLaunchSelection } from "../internalProductRepository.js";
+import { approvedPublicationPrice, derivePublicationEligibility, getPublicationPreview, getPublicationReview, getPublicationSummary, getPublicProductBySlug, listPublicProducts, publishProduct, publishSavedDraft, rollbackProduct, savePublicationDraft, selectProductPublicationContext, unpublishProduct } from "../productPublicationRepository.js";
 import type { BackendOrder, SupplierOrder, SupplierProductMapping } from "../types.js";
 import type { PricingProposal } from "../pricingProposalRepository.js";
 import type { ScoopCatalogueProduct } from "../suppliers/scoop/scoopTypes.js";
+import { buildSupplierProductEnrichment } from "../supplierProductEnrichment.js";
 
 const order: BackendOrder = {
   id: "order-test",
@@ -200,6 +225,7 @@ const order: BackendOrder = {
   refunds: [],
 };
 
+
 const config = {
   merchantId: "sandbox-merchant-id",
   merchantKey: "sandbox-merchant-key",
@@ -221,7 +247,8 @@ assert.equal(normalizeSouthAfricanConsigneeIdForCj(undefined), undefined);
 class MockCjOrderClient {
   calls: { path: string; body?: unknown }[] = [];
   failCreate: "none" | "network" | "supplier" = "none";
-  logisticsMode: "available" | "empty" = "available";
+  logisticsMode: "available" | "empty" | "rate-limited" | "temporary-error" = "available";
+  logisticsDelayMs = 0;
   unavailableMode: "known" | "unknown" = "known";
   stockMode: "available" | "source-unresolved" = "available";
   productDataMode: "complete" | "missing-weight" | "missing-product-prop" = "complete";
@@ -297,6 +324,9 @@ class MockCjOrderClient {
       } as T;
     }
     if (path === "/logistic/freightCalculateTip") {
+      if (this.logisticsDelayMs) await new Promise((resolve) => setTimeout(resolve, this.logisticsDelayMs));
+      if (this.logisticsMode === "rate-limited") throw new CjApiError("CJ_RATE_LIMITED", "raw supplier throttle", "rate-request", 2_000);
+      if (this.logisticsMode === "temporary-error") throw new CjApiError("CJ_API_UNAVAILABLE", "raw supplier outage", "outage-request");
       if (this.logisticsMode === "empty") {
         return {
           data: [],
@@ -544,6 +574,13 @@ async function mapSupplierOrderSkus(supplierOrder: SupplierOrder) {
   return mapped;
 }
 
+const originalCwd = cwd();
+const adminOrderDetailSource = readFileSync(
+  join(originalCwd, "src/pages/admin/AdminOrderDetailPage.tsx"),
+  "utf8",
+);
+
+async function runPayfastAndCjUnitCoverage() {
 const request = buildPayfastPaymentRequest(order, config);
 assert.equal(request.actionUrl, "https://sandbox.payfast.co.za/eng/process");
 assert.equal(request.fields.m_payment_id, "TC-2026-000001-PF");
@@ -684,9 +721,12 @@ assert.equal(
   true,
 );
 
-const originalCwd = cwd();
 const adminCjPageSource = readFileSync(
   join(originalCwd, "src/pages/admin/AdminCjSupplierPage.tsx"),
+  "utf8",
+);
+const cjSupplierEvidencePanelSource = readFileSync(
+  join(originalCwd, "src/components/admin/CjSupplierEvidencePanel.tsx"),
   "utf8",
 );
 const cjWorkflowSource = readFileSync(
@@ -695,10 +735,6 @@ const cjWorkflowSource = readFileSync(
 );
 const adminCjImportedPageSource = readFileSync(
   join(originalCwd, "src/pages/admin/AdminCjImportedProductsPage.tsx"),
-  "utf8",
-);
-const adminOrderDetailSource = readFileSync(
-  join(originalCwd, "src/pages/admin/AdminOrderDetailPage.tsx"),
   "utf8",
 );
 const supplierOrderDetailSource = readFileSync(
@@ -722,7 +758,7 @@ assert.equal(adminCjPageSource.includes("<h2 className=\"text-lg font-black\">Im
 assert.equal(adminCjPageSource.includes("Create CJ Order"), false);
 assert.equal(adminCjPageSource.includes("Submit CJ Order"), false);
 assert.equal(adminCjPageSource.includes("Check delivery to South Africa"), true);
-assert.equal(adminCjPageSource.includes("Checking delivery to South Africa..."), true);
+assert.equal(adminCjPageSource.includes("Checking CJ delivery..."), true);
 assert.equal(adminCjPageSource.includes("Not currently deliverable to South Africa via CJ."), true);
 assert.equal(adminCjPageSource.includes("setDeliveryCheck(undefined);"), true);
 assert.equal(cjWorkflowSource.includes('return `${scope}:${categoryId ?? "all"}:${query.trim().toLowerCase()}`;'), true);
@@ -735,14 +771,44 @@ assert.equal(adminCjImportedPageSource.includes("Product name, CJ SKU or product
 assert.equal(adminCjImportedPageSource.includes("Mapping"), true);
 assert.equal(adminCjImportedPageSource.includes("Supplier status"), true);
 assert.equal(adminCjImportedPageSource.includes("Review Mapping"), true);
+assert.equal(adminCjImportedPageSource.includes("Map to existing TekCentral Product"), true);
+assert.equal(adminCjImportedPageSource.includes("Preview suggested TekCentral Product"), true);
+assert.equal(adminCjImportedPageSource.includes("Create TekCentral Product &amp; Map"), true);
+assert.equal(adminCjImportedPageSource.includes("Create a new TekCentral Product from this CJ item"), true);
+assert.equal(adminCjImportedPageSource.includes("No matching TekCentral Product found."), true);
+assert.equal(adminCjImportedPageSource.includes("Map selected Product"), true);
+assert.equal(adminCjPageSource.includes("Preview exact product mapping"), false);
+assert.equal(adminCjPageSource.includes("Create new TekCentral Product"), true);
+assert.equal(adminCjPageSource.includes("Preview suggested TekCentral Product"), true);
+assert.equal(adminCjPageSource.includes("Map to existing TekCentral Product"), true);
+assert.equal(adminCjPageSource.includes("Map selected Product for review"), true);
+assert.equal(adminCjPageSource.includes("Object.entries(mappingPreview.proposal.fieldConfidence ?? {})"), true);
+assert.equal(adminCjPageSource.includes("Object.entries(mappingPreview.proposal.variantAttributes ?? {})"), true);
+assert.equal(adminCjPageSource.includes("No structured attributes available."), true);
+assert.equal(adminCjImportedPageSource.includes("Object.entries(creationPreview.proposal.fieldConfidence ?? {})"), true);
+assert.equal(adminCjImportedPageSource.includes("Object.entries(creationPreview.proposal.variantAttributes ?? {})"), true);
+assert.equal(adminCjImportedPageSource.includes("(creationPreview.categories ?? []).map"), true);
+assert.equal(cjWorkflowSource.includes('return status !== "VERIFIED" || changeRequested;'), true);
+assert.equal(cjWorkflowSource.includes('return status === "SUGGESTED" || status === "VERIFIED";'), true);
+assert.equal(adminCjPageSource.includes("Mapped TekCentral Product"), true);
+assert.equal(adminCjPageSource.includes("Continue Product setup"), true);
+assert.equal(cjSupplierEvidencePanelSource.includes("Supplier evidence"), true);
+assert.equal(cjSupplierEvidencePanelSource.includes("Confirm CJ currency"), true);
+assert.equal(cjSupplierEvidencePanelSource.includes("Record procurement cost"), true);
+assert.equal(cjSupplierEvidencePanelSource.includes("Refresh FX"), true);
+assert.equal(cjSupplierEvidencePanelSource.includes("Manual FX fallback"), true);
+assert.equal(adminCjPageSource.includes("Change mapping"), true);
+assert.equal(adminCjImportedPageSource.includes("Mapped TekCentral Product"), true);
+assert.equal(adminCjImportedPageSource.includes("View TekCentral Product"), true);
+assert.equal(adminCjImportedPageSource.includes("setMappingEditorOpen(false)"), true);
 assert.equal(adminCjImportedPageSource.includes("Create CJ Order"), false);
 assert.equal(appSource.includes('path="/admin/suppliers/cj/imported"'), true);
 assert.equal(adminOrderDetailSource.includes("Unsaved allocation changes"), true);
 assert.equal(adminOrderDetailSource.includes("Save the supplier allocation first."), true);
 assert.equal(adminOrderDetailSource.includes("Generating..."), true);
 assert.equal(adminOrderDetailSource.includes("Open {supplierOrder.id}"), true);
-assert.equal(adminOrderDetailSource.includes("function deriveOrderWorkflow"), true);
-assert.equal(adminOrderDetailSource.includes("Resolve CJ logistics availability"), true);
+assert.equal(adminOrderDetailSource.includes("deriveAdminOrderWorkflow"), true);
+assert.equal(readFileSync(join(originalCwd, "src/lib/admin-order-workflow.ts"), "utf8").includes("Resolve CJ logistics availability"), true);
 assert.equal(supplierOrderDetailSource.includes("CJ API"), true);
 assert.equal(supplierOrderDetailSource.includes("CJ fulfilment pending logistics selection"), true);
 assert.equal(supplierOrderDetailSource.includes("Direct to customer"), true);
@@ -848,7 +914,7 @@ const noRouteDeliveryCheck = await checkCjVariantDeliveryToSouthAfrica({
   client: noRouteDeliveryClient,
 });
 assert.equal(noRouteDeliveryCheck.status, "NO_ROUTE");
-assert.equal(noRouteDeliveryCheck.message, "No CJ shipping method is currently available to South Africa for this variant.");
+assert.equal(noRouteDeliveryCheck.message, "No supported CJ delivery method to South Africa was found for this variant.");
 assert.equal(noRouteDeliveryCheck.diagnostics?.destinationCountryCode, "ZA");
 assert.equal(noRouteDeliveryCheck.diagnostics?.itemCount, 1);
 assert.equal(noRouteDeliveryCheck.diagnosticReasons?.[0]?.includes("Weight unsupported"), true);
@@ -891,6 +957,52 @@ assert.equal(
   sourceUnresolvedClient.calls.some((call) => call.path === "/logistic/freightCalculateTip"),
   false,
 );
+resetCjDeliveryCheckCacheForTests();
+let deliveryNow = Date.parse("2026-10-04T10:00:00.000Z");
+const cachedDeliveryClient = new MockCjOrderClient();
+const cachedDeliveryInput = { supplierProductId: "PID-UNVERIFIED", supplierVariantId: "VID-UNVERIFIED", client: cachedDeliveryClient, useCache: true, now: () => deliveryNow, cacheTtlMs: 60_000 };
+const freshCachedCheck = await checkCjVariantDeliveryToSouthAfrica(cachedDeliveryInput);
+assert.equal(freshCachedCheck.status, "AVAILABLE");
+const freightCallsAfterFreshCheck = cachedDeliveryClient.calls.filter((call) => call.path === "/logistic/freightCalculateTip").length;
+const reusedCachedCheck = await checkCjVariantDeliveryToSouthAfrica(cachedDeliveryInput);
+assert.equal(reusedCachedCheck.cached, true);
+assert.equal(cachedDeliveryClient.calls.filter((call) => call.path === "/logistic/freightCalculateTip").length, freightCallsAfterFreshCheck);
+deliveryNow += 60_001;
+const staleCacheCheck = await checkCjVariantDeliveryToSouthAfrica(cachedDeliveryInput);
+assert.equal(staleCacheCheck.cached, undefined);
+assert.equal(cachedDeliveryClient.calls.filter((call) => call.path === "/logistic/freightCalculateTip").length, freightCallsAfterFreshCheck + 1);
+
+resetCjDeliveryCheckCacheForTests();
+const duplicateDeliveryClient = new MockCjOrderClient();
+duplicateDeliveryClient.logisticsDelayMs = 20;
+const duplicateInput = { supplierProductId: "PID-UNVERIFIED", supplierVariantId: "VID-UNVERIFIED", client: duplicateDeliveryClient, useCache: true };
+const [duplicateCheckA, duplicateCheckB] = await Promise.all([checkCjVariantDeliveryToSouthAfrica(duplicateInput), checkCjVariantDeliveryToSouthAfrica(duplicateInput)]);
+assert.equal(duplicateCheckA.status, "AVAILABLE");
+assert.equal(duplicateCheckB.status, "AVAILABLE");
+assert.equal(duplicateDeliveryClient.calls.filter((call) => call.path === "/logistic/freightCalculateTip").length, 1);
+
+resetCjDeliveryCheckCacheForTests();
+const rateLimitedDeliveryClient = new MockCjOrderClient();
+rateLimitedDeliveryClient.logisticsMode = "rate-limited";
+const rateLimitedInput = { supplierProductId: "PID-UNVERIFIED", supplierVariantId: "VID-UNVERIFIED", client: rateLimitedDeliveryClient, useCache: true };
+const rateLimitedCheck = await checkCjVariantDeliveryToSouthAfrica(rateLimitedInput);
+assert.equal(rateLimitedCheck.status, "RATE_LIMITED");
+assert.equal(rateLimitedCheck.message, "CJ is temporarily limiting delivery checks. Try again shortly.");
+assert.equal(rateLimitedCheck.supplierVariantId, "VID-UNVERIFIED");
+const rateLimitedFreightCalls = rateLimitedDeliveryClient.calls.filter((call) => call.path === "/logistic/freightCalculateTip").length;
+const cooldownCheck = await checkCjVariantDeliveryToSouthAfrica(rateLimitedInput);
+assert.equal(cooldownCheck.status, "RATE_LIMITED");
+assert.equal(rateLimitedDeliveryClient.calls.filter((call) => call.path === "/logistic/freightCalculateTip").length, rateLimitedFreightCalls);
+assert.equal(rateLimitedDeliveryClient.calls.some((call) => call.path === "/shopping/order/createOrderV2"), false);
+
+resetCjDeliveryCheckCacheForTests();
+const temporaryDeliveryClient = new MockCjOrderClient();
+temporaryDeliveryClient.logisticsMode = "temporary-error";
+const temporaryDeliveryCheck = await checkCjVariantDeliveryToSouthAfrica({ supplierProductId: "PID-UNVERIFIED", supplierVariantId: "VID-UNVERIFIED", client: temporaryDeliveryClient, useCache: true });
+assert.equal(temporaryDeliveryCheck.status, "TEMPORARY_ERROR");
+assert.equal(temporaryDeliveryCheck.message, "Delivery check could not be completed. Try again.");
+assert.equal(temporaryDeliveryClient.calls.some((call) => call.path === "/shopping/order/createOrderV2"), false);
+resetCjDeliveryCheckCacheForTests();
 const exactProductIdClient = new MockCjCatalogueClient();
 const exactProductIdResult = await searchCjProducts(
   { keyword: "461C62AD-6DD4-4BB6-A0B4-51EE138480B5", scope: "technology", page: 1, size: 20 },
@@ -962,11 +1074,153 @@ const normalSearchResult = await searchCjProducts(
 assert.equal(normalSearchResult.exactLookup, undefined);
 assert.equal(normalSearchResult.products[0]?.supplierProductName, "Wireless Mouse");
 assert.equal(normalSearchClient.calls.some((call) => call.path === "/product/listV2"), true);
+}
+
+await runPayfastAndCjUnitCoverage();
+
 const tempDir = await mkdtemp(join(tmpdir(), "tekcentral-payfast-test-"));
 const originalCjApiKey = process.env.CJ_API_KEY;
 const originalCjRealOrderFlag = process.env.CJ_REAL_ORDER_CREATION_ENABLED;
 try {
   chdir(tempDir);
+  const validFxFetch = (async () => new Response(JSON.stringify({ date: "2026-10-08", base: "USD", quote: "ZAR", rate: 17.25 }), { status: 200 })) as typeof fetch;
+  const provider = new FrankfurterEcbFxProvider(validFxFetch);
+  const providerQuote = await provider.getRate("usd", "zar");
+  assert.equal(providerQuote.rate, 17.25);
+  assert.equal(providerQuote.provider, "FRANKFURTER_ECB");
+  assert.equal(providerQuote.sourceCurrency, "USD");
+  assert.equal(providerQuote.targetCurrency, "ZAR");
+  await assert.rejects(new FrankfurterEcbFxProvider((async () => new Response(JSON.stringify({ date: "2026-10-08", rate: 0 }), { status: 200 })) as typeof fetch).getRate("USD", "ZAR"), /malformed/);
+  await assert.rejects(new FrankfurterEcbFxProvider((async () => { throw new Error("provider unavailable"); }) as typeof fetch).getRate("USD", "ZAR"), /provider unavailable/);
+  resetFxInflightForTests();
+  let fxCalls = 0;
+  const delayedProvider = { getRate: async (sourceCurrency: string, targetCurrency: string) => { fxCalls += 1; await new Promise((resolve) => setTimeout(resolve, 5)); return { ...providerQuote, sourceCurrency, targetCurrency, fetchedAt: new Date().toISOString() }; } };
+  const [firstFx, secondFx] = await Promise.all([refreshFxRate("USD", "ZAR", delayedProvider), refreshFxRate("USD", "ZAR", delayedProvider)]);
+  assert.equal(fxCalls, 1);
+  assert.equal(firstFx.rate, secondFx.rate);
+  assert.equal((await getFxRate("USD", "ZAR")).status, "FRESH");
+  assert.equal((await getStoredFxQuote("USD", "ZAR"))?.rate, 17.25);
+  assert.equal(fxQuoteStatus({ ...providerQuote, fetchedAt: "2020-01-01T00:00:00.000Z" }, 24, new Date("2026-10-08T00:00:00.000Z")), "STALE");
+  assert.equal(fxQuoteStatus(undefined, 24), "MISSING");
+  const eurQuote = await refreshFxRate("EUR", "ZAR", { getRate: async (sourceCurrency, targetCurrency) => ({ ...providerQuote, sourceCurrency, targetCurrency, rate: 19.5 }) });
+  assert.equal(eurQuote.sourceCurrency, "EUR");
+  assert.equal(cjLandedCostPricingInput({ supplierOfferId: "foreign:test", currency: "USD", productCost: 2.35, shippingCost: 12, fxRate: 17.25, fxBufferPercent: 0, pricingTimestamp: new Date().toISOString(), includeShippingInCost: false }).landedCostExVat, 40.54);
+  const fxThresholds = defaultPricingSettings.fxImpactThresholds;
+  assert.equal(classifyFxImpact(2.99, "INCREASE", fxThresholds), "IGNORE");
+  assert.equal(classifyFxImpact(3, "INCREASE", fxThresholds), "MONITOR");
+  assert.equal(classifyFxImpact(6.99, "INCREASE", fxThresholds), "MONITOR");
+  assert.equal(classifyFxImpact(7, "INCREASE", fxThresholds), "REVIEW");
+  assert.equal(classifyFxImpact(11.99, "INCREASE", fxThresholds), "REVIEW");
+  assert.equal(classifyFxImpact(12, "INCREASE", fxThresholds), "CRITICAL");
+  assert.equal(classifyFxImpact(-15, "DECREASE", fxThresholds), "MONITOR");
+  const foreignProposal = {
+    id: "price-foreign-baseline", productId: "demo-usbc-dock", supplierId: "FUTURE_FOREIGN_SUPPLIER", supplierOfferId: "FOREIGN:SKU-1",
+    costSnapshot: { supplierId: "FUTURE_FOREIGN_SUPPLIER", supplierOfferId: "FOREIGN:SKU-1", currency: "USD", landedCostExVat: 39.13, sourceCostAmount: 2.35, sourceCurrency: "USD", fxRateUsed: 16.6505, fxCapturedAt: "2026-10-08T00:00:00.000Z", pricingTimestamp: "2026-10-08T00:00:00.000Z" },
+    status: "PENDING_APPROVAL" as const, generatedAt: "2026-10-08T00:00:00.000Z", updatedAt: "2026-10-08T00:00:00.000Z", vatRatePercent: 15, warnings: [],
+  };
+  const simulateFx = (percent: number, baselinePrice = 150) => evaluateFxImpact({ productId: foreignProposal.productId, productName: "Foreign supplier fixture", category: "Accessories", proposal: foreignProposal, baselinePrice, commercialBaseline: "PENDING", currentFx: { ...providerQuote, rate: 16.6505 * (1 + percent / 100) }, settings: defaultPricingSettings, now: "2026-10-08T12:00:00.000Z" });
+  assert.equal(simulateFx(2).classification, "IGNORE");
+  assert.equal(simulateFx(5).classification, "MONITOR");
+  assert.equal(simulateFx(9).classification, "REVIEW");
+  assert.equal(simulateFx(15).classification, "CRITICAL");
+  const publishedImpact = evaluateFxImpact({ productId: foreignProposal.productId, productName: "Published foreign fixture", proposal: foreignProposal, baselinePrice: 150, commercialBaseline: "LIVE", currentFx: { ...providerQuote, rate: 16.6505 * 1.09 }, settings: defaultPricingSettings });
+  assert.equal(publishedImpact.commercialBaseline, "LIVE");
+  assert.equal(publishedImpact.currentRetailPrice, 150);
+  assert.equal(publishedImpact.classification, "REVIEW");
+  const favorableImpact = simulateFx(-10);
+  assert.equal(favorableImpact.classification, "MONITOR");
+  assert.equal(favorableImpact.direction, "DECREASE");
+  assert.equal(favorableImpact.reasons.includes("FAVORABLE_COST_MOVEMENT"), true);
+  assert.equal(simulateFx(2, 45).classification, "CRITICAL");
+  assert.equal(calculateMarginAtPrice(150, 45, 15)?.grossMarginPercent, 65.5);
+  assert.equal(shouldAutoGenerateFxProposal("REVIEW", { ...defaultPricingSettings, fxImpactMonitoringMode: "MANUAL" }), false);
+  assert.equal(shouldAutoGenerateFxProposal("REVIEW", defaultPricingSettings), true);
+  assert.equal(shouldAutoGenerateFxProposal("MONITOR", defaultPricingSettings), false);
+  const reviewImpact = simulateFx(9);
+  const firstImpactRecord = await saveFxPricingImpact(reviewImpact);
+  const repeatedImpactRecord = await saveFxPricingImpact({ ...reviewImpact, evaluatedAt: "2026-10-08T13:00:00.000Z" });
+  assert.equal(firstImpactRecord.notificationCreatedAt, repeatedImpactRecord.notificationCreatedAt);
+  const changedImpactRecord = await saveFxPricingImpact({ ...simulateFx(15), evaluatedAt: "2026-10-08T14:00:00.000Z" });
+  assert.notEqual(changedImpactRecord.notificationCreatedAt, firstImpactRecord.notificationCreatedAt);
+  assert.equal((await listFxPricingImpacts()).length, 1);
+  const previousFxEmail = process.env.FX_PRICING_NOTIFICATION_EMAIL;
+  const previousFxBaseUrl = process.env.APP_PUBLIC_BASE_URL;
+  process.env.FX_PRICING_NOTIFICATION_EMAIL = "reports@tekcentral.co.za";
+  process.env.APP_PUBLIC_BASE_URL = "https://tekcentral.example";
+  let fxEmailCount = 0;
+  const fxMessages: MailMessage[] = [];
+  const fxMailTransport = { send: async (message: MailMessage) => { fxEmailCount += 1; fxMessages.push(message); } };
+  assert.equal(await notifyFxPricingImpact({ ...simulateFx(2), id: "fx-email-ignore" }, undefined, fxMailTransport), undefined);
+  assert.equal(await notifyFxPricingImpact({ ...simulateFx(5), id: "fx-email-monitor" }, undefined, fxMailTransport), undefined);
+  const emailReview = { ...simulateFx(9), id: "fx-email-action", productId: "fx-email-product", productName: "FX email fixture", commercialBaseline: "LIVE" as const };
+  const reviewNotification = await notifyFxPricingImpact(emailReview, foreignProposal, fxMailTransport);
+  assert.equal(reviewNotification?.status, "SENT");
+  assert.equal(reviewNotification?.recipient, "reports@tekcentral.co.za");
+  assert.equal(fxEmailCount, 1);
+  assert.equal(fxMessages[0]?.subject, "TekCentral pricing review required: FX email fixture");
+  assert.equal(fxMessages[0]?.text.includes("Proposal state: PENDING_APPROVAL"), true);
+  assert.equal(fxMessages[0]?.text.includes("Live storefront price has not been changed."), true);
+  assert.equal(fxMessages[0]?.text.includes("/admin/pricing?view=fx&search=fx-email-product&status=REVIEW"), true);
+  assert.equal((await notifyFxPricingImpact({ ...emailReview, evaluatedAt: "2026-10-08T16:00:00.000Z" }, foreignProposal, fxMailTransport))?.status, "SENT");
+  assert.equal(fxEmailCount, 1);
+  const emailCritical = { ...simulateFx(15), id: emailReview.id, productId: emailReview.productId, productName: emailReview.productName, commercialBaseline: "LIVE" as const };
+  const criticalNotification = await notifyFxPricingImpact(emailCritical, foreignProposal, fxMailTransport);
+  assert.equal(criticalNotification?.status, "SENT");
+  assert.equal(fxEmailCount, 2);
+  assert.equal(fxMessages[1]?.subject, "TekCentral critical pricing alert: FX email fixture");
+  assert.equal(fxMessages[1]?.text.includes("CRITICAL PRICING ACTION REQUIRED"), true);
+  assert.equal((await notifyFxPricingImpact(emailCritical, foreignProposal, fxMailTransport))?.status, "SENT");
+  assert.equal(fxEmailCount, 2);
+  const resolvedThenChangedReview = { ...emailReview, fingerprint: `${emailReview.fingerprint}-resolved-new`, evaluatedAt: "2026-10-08T17:00:00.000Z" };
+  assert.equal((await notifyFxPricingImpact(resolvedThenChangedReview, foreignProposal, fxMailTransport))?.status, "SENT");
+  assert.equal(fxEmailCount, 3);
+  const failedFxImpact = { ...emailReview, id: "fx-email-failure", productId: "fx-email-failure", fingerprint: "fx-email-failure-fingerprint" };
+  const failedFxNotification = await notifyFxPricingImpact(failedFxImpact, foreignProposal, { send: async () => { throw new Error("SMTP_TIMEOUT"); } });
+  assert.equal(failedFxNotification?.status, "FAILED");
+  assert.equal(failedFxNotification?.failureReason, "SMTP_CONNECTION_FAILED");
+  const retriedFxNotification = await retryFxPricingNotification(failedFxNotification!, failedFxImpact, foreignProposal, fxMailTransport);
+  assert.equal(retriedFxNotification?.status, "SENT");
+  assert.equal(retriedFxNotification?.retryCount, 1);
+  const fxSendsAfterRetry = fxEmailCount;
+  assert.equal((await retryFxPricingNotification(retriedFxNotification!, failedFxImpact, foreignProposal, fxMailTransport))?.status, "SENT");
+  assert.equal(fxEmailCount, fxSendsAfterRetry);
+  assert.equal(buildFxPricingEmail(emailReview, foreignProposal, "reports@tekcentral.co.za").to, "reports@tekcentral.co.za");
+  if (previousFxEmail === undefined) delete process.env.FX_PRICING_NOTIFICATION_EMAIL; else process.env.FX_PRICING_NOTIFICATION_EMAIL = previousFxEmail;
+  if (previousFxBaseUrl === undefined) delete process.env.APP_PUBLIC_BASE_URL; else process.env.APP_PUBLIC_BASE_URL = previousFxBaseUrl;
+  const lifecycleBaseline = await savePricingProposal({ ...foreignProposal, productId: "demo-monitor-27-qhd", supplierOfferId: "FOREIGN:MONITOR-27", costSnapshot: { ...foreignProposal.costSnapshot, supplierOfferId: "FOREIGN:MONITOR-27" } });
+  const materialQuote = { ...providerQuote, rate: 16.6505 * 1.09, fetchedAt: "2026-10-08T15:00:00.000Z" };
+  const lifecycleFirst = await reconcileForeignCurrencyPricingImpact(materialQuote);
+  assert.equal(lifecycleFirst.generated, 1);
+  assert.equal((await getPricingProposal(lifecycleBaseline.id))?.status, "SUPERSEDED");
+  const lifecycleActive = (await listPricingProposals()).filter((item) => item.productId === "demo-monitor-27-qhd" && item.status === "PENDING_APPROVAL");
+  assert.equal(lifecycleActive.length, 1);
+  const lifecycleRepeated = await reconcileForeignCurrencyPricingImpact(materialQuote);
+  assert.equal(lifecycleRepeated.generated, 0);
+  assert.equal((await listPricingProposals()).filter((item) => item.productId === "demo-monitor-27-qhd" && item.status === "PENDING_APPROVAL").length, 1);
+  assert.deepEqual(await discoverRequiredFxPairs(), [{ sourceCurrency: "USD", targetCurrency: "ZAR" }]);
+  let scheduledProviderCalls = 0;
+  const freshRun = await runFxPricingReconciliation({ trigger: "MANUAL", provider: { getRate: async () => { scheduledProviderCalls += 1; return providerQuote; } } });
+  assert.equal(scheduledProviderCalls, 0);
+  assert.equal(freshRun.ratesReused, 1);
+  await saveFxQuote({ ...providerQuote, fetchedAt: "2020-01-01T00:00:00.000Z" });
+  const scheduledProvider = { getRate: async (sourceCurrency: string, targetCurrency: string) => { scheduledProviderCalls += 1; await new Promise((resolve) => setTimeout(resolve, 5)); return { ...providerQuote, sourceCurrency, targetCurrency, fetchedAt: new Date().toISOString() }; } };
+  const overlappingFirst = runFxPricingReconciliation({ trigger: "SCHEDULED", provider: scheduledProvider });
+  const overlappingSecond = runFxPricingReconciliation({ trigger: "MANUAL", provider: scheduledProvider });
+  assert.equal(overlappingFirst, overlappingSecond);
+  const overlappingResult = await overlappingFirst;
+  assert.equal(overlappingResult.ratesRefreshed, 1);
+  assert.equal(scheduledProviderCalls, 1);
+  const attentionFixtures = [{ ...reviewImpact, id: "A:offer", productId: "A", classification: "REVIEW" as const }, { ...reviewImpact, id: "A:other", productId: "A", classification: "CRITICAL" as const }, { ...reviewImpact, id: "B:offer", productId: "B", classification: "CRITICAL" as const }, { ...reviewImpact, id: "C:offer", productId: "C", classification: "MONITOR" as const }];
+  assert.equal(deriveFxPricingAttentionCount(attentionFixtures, []), 2);
+  assert.equal(deriveFxPricingAttentionCount(attentionFixtures.map((item) => item.productId === "B" ? { ...item, classification: "IGNORE" as const } : item), []), 1);
+  await saveFxQuote({ ...providerQuote, fetchedAt: "2020-01-01T00:00:00.000Z" });
+  const failedRun = await runFxPricingReconciliation({ trigger: "SCHEDULED", provider: { getRate: async () => { throw new Error("provider offline"); } } });
+  assert.equal(failedRun.status, "FAILED");
+  assert.equal((await getFxRate("USD", "ZAR", new Date("2026-10-08T12:00:00.000Z"))).status, "STALE");
+  assert.equal(startFxReconciliationScheduler({ enabled: false }).enabled, false);
+  const schedulerRegistration = startFxReconciliationScheduler({ enabled: true, runImmediately: false, appRole: "worker" });
+  assert.equal(schedulerRegistration.enabled, true);
+  schedulerRegistration.stop();
   delete process.env.CJ_API_KEY;
   await assert.rejects(new CjAuthService().getAccessToken(), /CJ API key is not configured/);
   process.env.CJ_API_KEY = "test-cj-api-key";
@@ -1162,10 +1416,19 @@ try {
     variantNameEn: "Black EU",
     sellPrice: "12.50",
     currency: "USD",
+    variantWeight: "420",
+    variantLength: "120",
+    variantWidth: "80",
+    variantHeight: "45",
   });
   assert.equal(cjVariant.supplierVariantId, "VID-1");
   assert.equal(cjVariant.supplierVariantSku, "CJ-VAR-1");
   assert.equal(cjVariant.price, 12.5);
+  assert.equal(cjVariant.lengthMm, 120);
+  assert.equal(cjVariant.identityEvidence?.status, "VARIANT_REVIEW_REQUIRED");
+  assert.equal(cjVariant.logisticsEvidence?.status, "COMPLETE");
+  assert.equal(cjVariant.logisticsEvidence?.observations.find((item) => item.field === "variantWeight")?.classification, "SHIPPING");
+  assert.equal(normalizeCjVariant({ vid: "BAD", variantWeight: "-2", variantLength: 0 }).logisticsEvidence?.status, "MISSING");
   const cjVariantTwo = normalizeCjVariant({
     vid: "VID-2",
     pid: "PID-1",
@@ -1192,17 +1455,225 @@ try {
   assert.equal(cjProduct.supplierSku, "CJ-SPU-1");
   assert.equal(cjProduct.variants[0]?.supplierVariantId, "VID-1");
   assert.equal(cjProduct.variants[0]?.supplierVariantSku, "CJ-VAR-1");
+  assert.equal(cjProduct.currencyEvidence?.source, "CJ_API_CONTRACT");
+  assert.equal(cjVariant.currency, "USD");
+  assert.equal(cjVariant.currencyEvidence?.source, "CJ_API_CONTRACT");
+  assert.equal(cjVariant.costEvidence?.classification, "VARIANT_SELL_PRICE");
+  assert.deepEqual(selectCjExactVariantPrice({ tradePrice: [{ minimumOrderQuantity: 1, maximumOrderQuantity: 10, wholePrice: 4 }], variantSellPrice: 5 }, 1), { amount: 4, sourceField: "tradePrice", classification: "STOCK_UP_PRICE" });
+  assert.deepEqual(selectCjExactVariantPrice({ tradePrice: [{ minimumOrderQuantity: 100, maximumOrderQuantity: 200, wholePrice: 4 }], variantSellPrice: 5 }, 1), { amount: 5, sourceField: "variantSellPrice", classification: "VARIANT_SELL_PRICE" });
+  const detailPriced = applyCjProductDetailPricing([cjVariant], { stanProducts: [{ id: "VID-1", wholesalePrice: { directWholesalePrice: [{ minimumOrderQuantity: 1, maximumOrderQuantity: 99, wholePrice: 11.75 }] }, variantSellPrice: 12 }] });
+  assert.equal(detailPriced[0]?.costEvidence?.sourceField, "wholesalePrice.directWholesalePrice");
+  assert.equal(normalizeCjVariant({ vid: "NO-PRICE" }).costEvidence, undefined);
+  const refreshPriceProduct = normalizeCjProduct({ pid: "PID-PRICE-REFRESH", productSku: "CJ-PRICE-REFRESH", productNameEn: "Exact price refresh fixture", currency: "USD", variants: [{ vid: "VID-PRICE-REFRESH", pid: "PID-PRICE-REFRESH", variantSku: "CJ-PRICE-REFRESH-2M", variantNameEn: "2M", variantSellPrice: 2.35, currency: "USD" }] });
+  await saveCjCatalogueProduct(refreshPriceProduct);
+  const refreshCalls: string[] = [];
+  const refreshClient = { request: async (path: string) => { refreshCalls.push(path); return path === "/product/variant/queryByVid" ? { data: { vid: "VID-PRICE-REFRESH", pid: "PID-PRICE-REFRESH", variantSku: "CJ-PRICE-REFRESH-2M", variantNameEn: "2M", variantSellPrice: 2.35, currency: "USD" } } : { requestId: "price-refresh", data: { stanProducts: [{ id: "VID-PRICE-REFRESH", wholesalePrice: { directWholesalePrice: [{ minimumOrderQuantity: 1, maximumOrderQuantity: 99, wholePrice: 2.35 }] } }] } }; } };
+  const unchangedPriceRefresh = await refreshCjVariantSourcePrice({ supplierProductId: "PID-PRICE-REFRESH", supplierVariantId: "VID-PRICE-REFRESH", supplierVariantSku: "CJ-PRICE-REFRESH-2M" }, refreshClient as unknown as Parameters<typeof refreshCjVariantSourcePrice>[1]);
+  assert.equal(unchangedPriceRefresh.variant.costEvidence?.amount, 2.35);
+  assert.equal(unchangedPriceRefresh.variant.costEvidence?.sourceField, "wholesalePrice.directWholesalePrice");
+  assert.equal(unchangedPriceRefresh.variant.costEvidenceHistory?.length, 1);
+  assert.deepEqual(refreshCalls, ["/product/variant/queryByVid", "/product/productDetail/query"]);
+  assert.equal(refreshCalls.some((path) => /order|payment/i.test(path)), false);
+  const previousPriceTimestamp = unchangedPriceRefresh.variant.costEvidence?.capturedAt;
+  const changedPriceClient = { request: async (path: string) => path === "/product/variant/queryByVid" ? { data: { vid: "VID-PRICE-REFRESH", pid: "PID-PRICE-REFRESH", variantSku: "CJ-PRICE-REFRESH-2M", variantNameEn: "2M", variantSellPrice: 2.55, currency: "USD" } } : { requestId: "price-refresh-changed", data: { stanProducts: [{ id: "VID-PRICE-REFRESH", wholesalePrice: { directWholesalePrice: [{ minimumOrderQuantity: 1, maximumOrderQuantity: 99, wholePrice: 2.55 }] } }] } } };
+  const changedPriceRefresh = await refreshCjVariantSourcePrice({ supplierProductId: "PID-PRICE-REFRESH", supplierVariantId: "VID-PRICE-REFRESH", supplierVariantSku: "CJ-PRICE-REFRESH-2M" }, changedPriceClient as unknown as Parameters<typeof refreshCjVariantSourcePrice>[1]);
+  assert.equal(changedPriceRefresh.variant.costEvidence?.amount, 2.55);
+  assert.equal(changedPriceRefresh.variant.costEvidenceHistory?.some((entry) => entry.capturedAt === previousPriceTimestamp && entry.amount === 2.35), true);
+  const preservedTimestamp = changedPriceRefresh.variant.costEvidence?.capturedAt;
+  await assert.rejects(() => refreshCjVariantSourcePrice({ supplierProductId: "PID-PRICE-REFRESH", supplierVariantId: "VID-PRICE-REFRESH", supplierVariantSku: "CJ-PRICE-REFRESH-2M" }, { request: async () => { throw new CjApiError("CJ_RATE_LIMITED", "rate limited"); } } as unknown as Parameters<typeof refreshCjVariantSourcePrice>[1]), (error: unknown) => error instanceof CjApiError && error.code === "CJ_RATE_LIMITED");
+  assert.equal((await getCjCatalogueProduct("PID-PRICE-REFRESH"))?.variants[0].costEvidence?.capturedAt, preservedTimestamp);
+  const identityCandidate = { id: "identity", slug: "identity", sku: "TC-ID", name: "Different title", brand: "Other", model: "Other", category: "Accessories", categorySlug: "accessories", shortDescription: "", images: [], gtin: "0123456789012", publicationStatus: "INTERNAL_DRAFT", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), provenance: { createdFromSupplierOffer: true, sourceSupplier: "CJ", sourceSupplierOfferId: "CJ:IDENTITY:VID", sourceSupplierSku: "CJ-ID", sourceDescription: "Identity fixture" } } as Parameters<typeof exactCjProductIdentityMatches>[1];
+  assert.equal(exactCjProductIdentityMatches({ ...cjProduct, gtin: "0123456789012" }, identityCandidate), true);
+  assert.equal(exactCjProductIdentityMatches({ ...cjProduct, supplierProductName: identityCandidate.name }, identityCandidate), false);
   const stock = normalizeCjStock([
     { areaId: "1", areaEn: "China Warehouse", countryCode: "CN", totalInventoryNum: 5 },
     { areaId: "2", areaEn: "US Warehouse", countryCode: "US", storageNum: 3 },
   ]);
   assert.equal(stock.stockTotal, 8);
+  const availabilityCalls: { path: string; options?: unknown }[] = [];
+  const availabilityRefresh = await refreshCjVariantAvailability(
+    { supplierProductId: "PID-PRICE-REFRESH", supplierVariantId: "VID-PRICE-REFRESH", supplierVariantSku: "CJ-PRICE-REFRESH-2M" },
+    { request: async (path: string, options?: unknown) => {
+      availabilityCalls.push({ path, options });
+      return path === "/product/variant/queryByVid"
+        ? { data: { vid: "VID-PRICE-REFRESH", pid: "PID-PRICE-REFRESH", variantSku: "CJ-PRICE-REFRESH-2M", inventoryNum: 7 } }
+        : { requestId: "stock-refresh", data: [{ areaId: "CN-1", countryCode: "CN", inventoryNum: 7 }] };
+    } } as unknown as Parameters<typeof refreshCjVariantAvailability>[1],
+  );
+  assert.equal(availabilityRefresh.variant.stockTotal, 7);
+  assert.equal(availabilityRefresh.variant.stockByWarehouse?.[0]?.quantity, 7);
+  assert.equal(availabilityRefresh.variant.stockEvidence?.source, "CJ_STOCK_BY_VID");
+  assert.deepEqual(availabilityCalls.map((call) => call.path), ["/product/variant/queryByVid", "/product/stock/queryByVid"]);
+  assert.equal(JSON.stringify(availabilityCalls).includes("VID-PRICE-REFRESH"), true);
+  assert.equal(availabilityCalls.some((call) => /order|payment/i.test(call.path)), false);
+  let mismatchedStockCalls = 0;
+  await assert.rejects(() => refreshCjVariantAvailability(
+    { supplierProductId: "PID-PRICE-REFRESH", supplierVariantId: "VID-PRICE-REFRESH", supplierVariantSku: "CJ-PRICE-REFRESH-2M" },
+    { request: async (path: string) => { if (path === "/product/stock/queryByVid") mismatchedStockCalls += 1; return { data: { vid: "OTHER-VID", pid: "PID-PRICE-REFRESH", variantSku: "CJ-PRICE-REFRESH-2M" } }; } } as unknown as Parameters<typeof refreshCjVariantAvailability>[1],
+  ), /different product or variant identity/);
+  assert.equal(mismatchedStockCalls, 0);
+  assert.equal(normalizeCjVariant({ vid: "VID-INVENTORY", inventoryNum: 0 }).stockTotal, 0);
+  assert.deepEqual(normalizeCjVariant({ vid: "VID-WAREHOUSE", inventories: [{ areaId: "CN", countryCode: "CN", inventoryNum: 4 }] }).stockByWarehouse?.map((item) => item.quantity), [4]);
   await saveCjCatalogueProduct(cjProduct);
   assert.equal((await getCjCatalogueProduct("PID-1"))?.supplierSku, "CJ-SPU-1");
   await saveCjCatalogueProduct({ ...cjProduct, supplierProductName: "65W USB C Charger Refreshed" });
   const savedCjProducts = await listCjCatalogueProducts();
   assert.equal(savedCjProducts.filter((product) => product.supplierProductId === "PID-1").length, 1);
   assert.equal((await getCjCatalogueProduct("PID-1"))?.supplierProductName, "65W USB C Charger Refreshed");
+  await assert.rejects(confirmCjCatalogueCurrency({ supplierProductId: "PID-1", currency: "USD", evidenceNote: "", sourceReference: "" }), /evidence note and source reference/);
+  await confirmCjCatalogueCurrency({ supplierProductId: "PID-1", currency: "USD", evidenceNote: "CJ account currency reviewed", sourceReference: "CJ account settings" });
+  assert.equal((await getCjCatalogueProduct("PID-1"))?.currencyEvidence?.source, "ADMIN_CONFIRMED");
+  await assert.rejects(confirmCjProcurementCost({ supplierProductId: "PID-1", supplierVariantId: "VID-1", amount: 12, currency: "USD", evidenceType: "", evidenceNote: "", sourceReference: "" }), /evidence type, evidence note and source reference/);
+  await verifyCjVariantEvidence({ supplierProductId: "PID-1", supplierVariantId: "VID-1", evidenceNote: "Black EU variant reviewed against CJ detail" });
+  await confirmCjProcurementCost({ supplierProductId: "PID-1", supplierVariantId: "VID-1", amount: 12, currency: "USD", evidenceType: "CJ_QUOTE", evidenceNote: "Procurement amount reviewed", sourceReference: "CJ account quotation" });
+  await confirmCjVariantLogistics({ supplierProductId: "PID-1", supplierVariantId: "VID-1", weightGrams: 420, lengthMm: 120, widthMm: 80, heightMm: 45, classification: "PACKAGE", evidenceNote: "Package specification reviewed", sourceReference: "CJ variant specification" });
+  const evidencedVariant = (await getCjCatalogueProduct("PID-1"))!.variants.find((variant) => variant.supplierVariantId === "VID-1")!;
+  assert.equal(evidencedVariant.identityEvidence?.status, "VARIANT_VERIFIED");
+  assert.equal(evidencedVariant.costEvidence?.classification, "PROCUREMENT_COST");
+  assert.equal(evidencedVariant.logisticsEvidence?.status, "COMPLETE");
+  const cjCatalogueOffer = cjVariantToSupplierOffer(cjProduct, cjVariant);
+  assert.equal(cjCatalogueOffer.id, "CJ:PID-1:VID-1");
+  assert.equal(cjCatalogueOffer.supplierVariantId, "VID-1");
+  assert.equal(cjCatalogueOffer.currency, "USD");
+  assert.equal((cjCatalogueOffer.metadata?.logistics as { status?: string }).status, "COMPLETE");
+  const strongEvidenceMapping = { productId: "demo-laptop-pro-14", supplierCode: "CJ", supplierSku: "CJ-VAR-1", supplierVariantId: "VID-1", status: "VERIFIED", confidence: 1, confidenceLevel: "HIGH", matchMethod: "EXACT_MANUFACTURER_MODEL", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as SupplierProductMapping;
+  const exactMappedEvidence = deriveCjPricingEvidence({ product: cjProduct, variant: cjVariant, mapping: strongEvidenceMapping, fxRate: 18, fxRateUpdatedAt: new Date().toISOString() });
+  assert.equal(exactMappedEvidence.variantStatus, "VARIANT_VERIFIED");
+  assert.equal(exactMappedEvidence.logistics.source, "CJ_VARIANT");
+  assert.equal(deriveCjPricingEvidence({ product: cjProduct, variant: { ...cjVariant, costEvidence: { ...cjVariant.costEvidence!, capturedAt: "2025-01-01T00:00:00.000Z" } }, mapping: strongEvidenceMapping, fxRate: 18, fxRateUpdatedAt: new Date().toISOString(), now: new Date("2026-01-01T00:00:00.000Z") }).blockers.includes("SOURCE_PRICE_STALE"), true);
+  assert.equal(deriveCjPricingEvidence({ product: cjProduct, variant: cjVariant, mapping: { ...strongEvidenceMapping, status: "REVIEW_REQUIRED" } }).variantStatus, "VARIANT_REVIEW_REQUIRED");
+  const pricingReadyVariant = { ...cjVariant, identityEvidence: { status: "VARIANT_VERIFIED" as const, source: "ADMIN_CONFIRMED" as const, evidence: ["Exact plug and model reviewed"], reviewedAt: new Date().toISOString() }, costEvidence: { amount: 12.5, currency: "USD", sourceField: "staffConfirmedProcurementCost", endpoint: "CJ account evidence", classification: "PROCUREMENT_COST" as const, confidence: "HIGH" as const, capturedAt: new Date().toISOString() } };
+  assert.equal(deriveCjPricingEvidence({ product: cjProduct, variant: pricingReadyVariant, mapping: strongEvidenceMapping, fxRate: 18, fxRateUpdatedAt: new Date().toISOString() }).status, "READY_FOR_PRICING");
+  assert.equal(deriveCjPricingEvidence({ product: cjProduct, variant: cjVariant, mapping: strongEvidenceMapping, fxRate: 18, fxRateUpdatedAt: new Date().toISOString() }).blockers.includes("AUTHORITATIVE_COST_MISSING"), false);
+  assert.equal(deriveCjPricingEvidence({ product: cjProduct, variant: cjVariant, mapping: strongEvidenceMapping, fxRate: 18, fxRateUpdatedAt: new Date().toISOString() }).normalizedCostZar, Math.round((cjVariant.price ?? 0) * 18 * 100) / 100);
+  assert.equal(deriveCjPricingEvidence({ product: { ...cjProduct, currency: undefined, currencyEvidence: { source: "UNKNOWN", confirmedAt: new Date().toISOString() } }, variant: { ...cjVariant, currency: undefined, currencyEvidence: { source: "UNKNOWN", confirmedAt: new Date().toISOString() } }, mapping: strongEvidenceMapping }).blockers.includes("CURRENCY_UNKNOWN"), true);
+  assert.equal(deriveCjPricingEvidence({ product: cjProduct, variant: cjVariant, mapping: strongEvidenceMapping }).blockers.includes("FX_RATE_REQUIRED"), true);
+  assert.equal(deriveCjPricingEvidence({ product: cjProduct, variant: cjVariantTwo, mapping: strongEvidenceMapping, fxRate: 18, fxRateUpdatedAt: new Date().toISOString() }).blockers.includes("VARIANT_AMBIGUOUS"), true);
+  assert.equal(historicalCjMappingReviewStatus({ ...strongEvidenceMapping, confidence: 0.35, confidenceLevel: "LOW", matchMethod: "staff_candidate" }), "REVIEW_REQUIRED");
+  assert.equal(historicalCjMappingReviewStatus(strongEvidenceMapping), "VERIFIED");
+  await assert.rejects(confirmCjAccountCurrency({ currency: "USD", evidenceType: "", evidenceNote: "", sourceReference: "" }), /requires evidence type/);
+  const accountCurrency = await confirmCjAccountCurrency({ currency: "USD", evidenceType: "CJ_ACCOUNT_UI", evidenceNote: "Purchasing currency shown in account", sourceReference: "CJ account settings" });
+  assert.equal(accountCurrency.accountCurrency?.scope, "ACCOUNT_LEVEL");
+  assert.equal(accountCurrency.accountCurrency?.confirmedBy, "TekCentral Staff");
+  assert.equal((await getCjEvidenceSettings()).accountCurrency?.currency, "USD");
+  const staleFxEvidence = deriveCjPricingEvidence({ product: cjProduct, variant: pricingReadyVariant, mapping: strongEvidenceMapping, supplierCurrencyEvidence: accountCurrency.accountCurrency, fxRate: 18, fxRateUpdatedAt: "2025-01-01T00:00:00.000Z", fxStaleAfterHours: 24, now: new Date("2026-01-01T00:00:00.000Z") });
+  assert.equal(staleFxEvidence.blockers.includes("FX_RATE_STALE"), true);
+  const currentFxEvidence = deriveCjPricingEvidence({ product: cjProduct, variant: pricingReadyVariant, mapping: strongEvidenceMapping, supplierCurrencyEvidence: accountCurrency.accountCurrency, fxRate: 18, fxRateUpdatedAt: new Date().toISOString() });
+  assert.equal(currentFxEvidence.blockers.includes("FX_RATE_REQUIRED"), false);
+  assert.equal(currentFxEvidence.fxStatus, "CONFIGURED");
+  const zarEvidence = deriveCjPricingEvidence({ product: { ...cjProduct, currency: "ZAR", currencyEvidence: { currency: "ZAR", source: "ADMIN_CONFIRMED", confirmedAt: new Date().toISOString() } }, variant: { ...pricingReadyVariant, currency: "ZAR", currencyEvidence: { currency: "ZAR", source: "ADMIN_CONFIRMED", confirmedAt: new Date().toISOString() }, costEvidence: { ...pricingReadyVariant.costEvidence, currency: "ZAR" } }, mapping: strongEvidenceMapping });
+  assert.equal(zarEvidence.fxStatus, "NOT_REQUIRED");
+  const siblingEvidence = deriveCjPricingEvidence({ product: cjProduct, variant: cjVariantTwo, mapping: { ...strongEvidenceMapping, supplierVariantId: "VID-2" } });
+  assert.equal(siblingEvidence.costStatus, "AUTHORITATIVE");
+  assert.equal(siblingEvidence.authoritativeCost, 13.5);
+  assert.equal(siblingEvidence.costSourceField, "sellPrice");
+  await selectCjEvidenceVariant({ supplierProductId: "PID-1", supplierVariantId: "VID-1", evidenceNote: "Selected Black EU sellable option" });
+  await selectCjEvidenceVariant({ supplierProductId: "PID-1", supplierVariantId: "VID-2", evidenceNote: "Changed intended sellable option" });
+  const selectionHistoryProduct = (await getCjCatalogueProduct("PID-1"))!;
+  assert.equal(selectionHistoryProduct.evidenceSelection?.selectedVariantId, "VID-2");
+  assert.deepEqual(selectionHistoryProduct.evidenceSelection?.history.slice(-2).map((entry) => entry.selectedVariantId), ["VID-1", "VID-2"]);
+  assert.equal(selectionHistoryProduct.variants.find((variant) => variant.supplierVariantId === "VID-1")?.costEvidence?.classification, "PROCUREMENT_COST");
+  await setCjVariantLaunchState({ supplierProductId: "PID-1", supplierVariantId: "VID-1", state: "SELECTED_FOR_LAUNCH" });
+  const launchedCjProduct = (await getCjCatalogueProduct("PID-1"))!;
+  assert.equal(launchedCjProduct.variants.find((variant) => variant.supplierVariantId === "VID-1")?.launch?.state, "SELECTED_FOR_LAUNCH");
+  assert.equal(launchedCjProduct.variants.find((variant) => variant.supplierVariantId === "VID-2")?.launch, undefined);
+  await saveCjCatalogueProduct({ ...cjProduct, supplierProductName: "65W USB C Charger Refreshed Again" });
+  assert.equal((await getCjCatalogueProduct("PID-1"))?.variants.find((variant) => variant.supplierVariantId === "VID-1")?.launch?.state, "SELECTED_FOR_LAUNCH");
+  const launchReadiness = await getCjVariantLaunchReadiness(launchedCjProduct, launchedCjProduct.variants[0], { productId: "demo-laptop-pro-14", supplierCode: "CJ", supplierSku: "CJ-VAR-1", supplierProductId: "PID-1", supplierVariantId: "VID-1", status: "VERIFIED", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  assert.equal(launchReadiness.blockers.includes("LOGISTICS_INCOMPLETE"), false);
+  assert.equal(launchReadiness.blockers.includes("PRICING_MISSING"), true);
+  assert.equal(launchReadiness.blockers.includes("AUTHORITATIVE_COMMERCIAL_DATA_MISSING"), false);
+  const productControlledLaunchReadiness = await getCjVariantLaunchReadiness(launchedCjProduct, launchedCjProduct.variants[0], { productId: "demo-laptop-pro-14", supplierCode: "CJ", supplierSku: "CJ-VAR-1", supplierProductId: "PID-1", supplierVariantId: "VID-1", status: "VERIFIED", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, "NOT_SELECTED");
+  assert.equal(productControlledLaunchReadiness.blockers.includes("NOT_SELECTED"), true);
+  const selectedPublicationContext = selectProductPublicationContext([
+    { supplier: "SCOOP", mapping: { updatedAt: "2026-01-01" }, proposal: { status: "PENDING_APPROVAL", generatedAt: "2026-01-01" }, readiness: { status: "NOT_READY", blockers: ["PRICING_NOT_APPROVED"] } },
+    { supplier: "CJ", mapping: { updatedAt: "2026-01-02" }, proposal: { status: "APPROVED", generatedAt: "2026-01-02" }, readiness: { status: "READY_FOR_PUBLISH_REVIEW", blockers: [] } },
+  ]);
+  assert.equal(selectedPublicationContext?.supplier, "CJ");
+  const exactCrossSupplierProduct = normalizeCjProduct({ pid: "PID-EXACT", productSku: "CJ-EXACT", productNameEn: "Promotional 14 inch laptop", brandName: "TekPro", model: "DT14 Pro", currency: "USD", variants: [{ vid: "VID-EXACT", variantSku: "CJ-EXACT-BLACK", variantNameEn: "Black", variantSellPrice: 250, currency: "USD" }] });
+  await saveCjCatalogueProduct(exactCrossSupplierProduct);
+  const exactPreview = await previewCjProductMapping({ supplierProductId: "PID-EXACT", supplierVariantId: "VID-EXACT" });
+  assert.equal(exactPreview.action, "MAP_EXISTING");
+  assert.equal(exactPreview.existingProduct?.id, "demo-laptop-pro-14");
+  assert.equal(exactPreview.proposal.name.includes("Promotional"), false);
+  assert.equal(exactPreview.proposal.model, "DT14 Pro");
+  assert.equal(exactPreview.proposal.fieldConfidence.model, "HIGH");
+  const exactApplied = await createTekCentralProductFromCj({ supplierProductId: "PID-EXACT", supplierVariantId: "VID-EXACT", name: "TekPro DT14 Pro Laptop", categorySlug: "computers", evidenceNote: "Exact manufacturer and model reviewed", sourceReference: "Manufacturer product record", confirmDemoProduct: true, confirmed: true });
+  const exactAppliedAgain = await createTekCentralProductFromCj({ supplierProductId: "PID-EXACT", supplierVariantId: "VID-EXACT", name: "TekPro DT14 Pro Laptop", categorySlug: "computers", evidenceNote: "Exact manufacturer and model reviewed", sourceReference: "Manufacturer product record", confirmDemoProduct: true, confirmed: true });
+  assert.equal(exactApplied.product.id, "demo-laptop-pro-14");
+  assert.equal(exactAppliedAgain.mapping.id, exactApplied.mapping.id);
+  assert.equal((await listSupplierProductMappings()).filter((mapping) => mapping.supplierCode === "CJ" && mapping.supplierProductId === "PID-EXACT" && mapping.supplierVariantId === "VID-EXACT").length, 1);
+  const replacedMapping = await mapCjVariantToExistingProduct({ supplierProductId: "PID-EXACT", supplierVariantId: "VID-EXACT", productId: "demo-router-gigabit", previousMappingId: exactApplied.mapping.id, evidenceNote: "Staff confirmed replacement Product identity", sourceReference: "Manufacturer model comparison", confirmDemoProduct: true });
+  assert.equal(replacedMapping.previous?.status, "SUPERSEDED");
+  assert.equal(replacedMapping.replacement.status, "VERIFIED");
+  assert.equal(replacedMapping.previous?.supersededByMappingId, replacedMapping.replacement.id);
+  await assert.rejects(mapCjVariantToExistingProduct({ supplierProductId: "PID-EXACT", supplierVariantId: "VID-EXACT", productId: "demo-headset-usb", evidenceNote: "", sourceReference: "", confirmDemoProduct: false }), /requires evidence/);
+  await assert.rejects(mapCjVariantToExistingProduct({ supplierProductId: "PID-EXACT", supplierVariantId: "VID-EXACT", productId: "demo-headset-usb", evidenceNote: "Exact identity reviewed", sourceReference: "Manufacturer catalogue", confirmDemoProduct: false }), /demo\/test Product/);
+  const ugreenProduct = normalizeCjProduct({ pid: "1380448043828121600", productSku: "CJ-UGREEN-CABLE", productNameEn: "UGREEN Green Link Ethernet Cable", supplierName: "Unrelated Marketplace Supplier", categoryName: "Consumer Electronics > Accessories & Parts > Digital Cables", variants: [{ vid: "1380448045375819776", variantSku: "CJ-UGREEN-CABLE-1M", variantNameEn: "UGREEN Green Link Ethernet Cable 1M" }, { vid: "1380448045447122944", variantSku: "CJ-UGREEN-CABLE-2M", variantNameEn: "UGREEN Green Link Ethernet Cable 2M" }] });
+  await saveCjCatalogueProduct(ugreenProduct);
+  const productsBeforeUgreenPreview = (await listAdminProducts()).length;
+  const ugreenOneMetrePreview = await previewCjProductMapping({ supplierProductId: ugreenProduct.supplierProductId, supplierVariantId: ugreenProduct.variants[0].supplierVariantId });
+  const ugreenPreview = await previewCjProductMapping({ supplierProductId: ugreenProduct.supplierProductId, supplierVariantId: ugreenProduct.variants[0].supplierVariantId });
+  const ugreenTwoMetrePreview = await previewCjProductMapping({ supplierProductId: ugreenProduct.supplierProductId, supplierVariantId: ugreenProduct.variants[1].supplierVariantId });
+  assert.equal(ugreenOneMetrePreview.proposal.name, "UGREEN Green Link Ethernet Cable 1M");
+  assert.equal(ugreenTwoMetrePreview.proposal.name, "UGREEN Green Link Ethernet Cable 2M");
+  assert.equal(ugreenPreview.proposal.brand, "UGREEN");
+  assert.notEqual(ugreenPreview.proposal.brand, "Unrelated Marketplace Supplier");
+  assert.equal(ugreenPreview.proposal.model, "");
+  assert.equal(ugreenPreview.proposal.categorySlug, "cables-connectivity");
+  assert.equal(ugreenPreview.proposal.subcategory, "Network Cables");
+  assert.equal(ugreenPreview.proposal.evidenceNote.length > 0, true);
+  assert.equal(ugreenTwoMetrePreview.proposal.sourceReference, "CJ PID 1380448043828121600 / VID 1380448045447122944");
+  assert.equal(ugreenPreview.proposal.fieldConfidence.brand, "MEDIUM");
+  assert.equal(ugreenPreview.proposalVersion, 2);
+  assert.equal(ugreenPreview.proposalFingerprint.endsWith(":v2"), true);
+  assert.equal((await listAdminProducts()).length, productsBeforeUgreenPreview);
+  const capacityProduct = normalizeCjProduct({ pid: "PID-CAPACITY", productSku: "CJ-SSD", productNameEn: "Portable SSD", variants: [{ vid: "VID-CAPACITY", variantSku: "CJ-SSD-1TB", variantNameEn: "1TB", variantKeyMap: { Capacity: "1TB" } }] });
+  await saveCjCatalogueProduct(capacityProduct);
+  const capacityPreview = await previewCjProductMapping({ supplierProductId: "PID-CAPACITY", supplierVariantId: "VID-CAPACITY" });
+  assert.equal(capacityPreview.proposal.name, "Portable SSD 1TB");
+  assert.equal(capacityPreview.proposal.brand, "");
+  assert.equal(capacityPreview.proposal.model, "");
+  const unresolvedCreationProduct = normalizeCjProduct({ pid: "PID-STAFF-CREATE", productSku: "CJ-STAFF-CREATE", productNameEn: "Hot Sale Wholesale USB Accessory", variants: [{ vid: "VID-STAFF-CREATE", variantSku: "CJ-STAFF-CREATE-BLACK", variantNameEn: "Black" }] });
+  await saveCjCatalogueProduct(unresolvedCreationProduct);
+  const unresolvedPreview = await previewCjProductMapping({ supplierProductId: "PID-STAFF-CREATE", supplierVariantId: "VID-STAFF-CREATE" });
+  assert.equal(unresolvedPreview.action, "CREATE_NEW");
+  assert.equal(unresolvedPreview.proposal.name, "USB Accessory Black");
+  assert.equal(unresolvedPreview.proposal.model, "");
+  assert.equal(unresolvedPreview.proposal.proposedSku, "TC-CJ-STAFF-CREATE-BLACK");
+  assert.equal(unresolvedPreview.proposal.evidenceNote.length > 0, true);
+  assert.equal(unresolvedPreview.proposal.sourceReference, "CJ PID PID-STAFF-CREATE / VID VID-STAFF-CREATE");
+  await assert.rejects(previewCjProductMapping({ supplierProductId: "PID-STAFF-CREATE", supplierVariantId: "VID-WRONG" }), /exact variant/i);
+  await assert.rejects(createTekCentralProductFromCj({ supplierProductId: "PID-STAFF-CREATE", supplierVariantId: "VID-STAFF-CREATE", name: "Confirmed USB Accessory", categorySlug: "accessories", confirmed: true }), /require evidence/);
+  const staffCreatedProduct = await createTekCentralProductFromCj({ supplierProductId: "PID-STAFF-CREATE", supplierVariantId: "VID-STAFF-CREATE", name: "Confirmed USB Accessory", categorySlug: "accessories", shortDescription: "Staff-reviewed USB accessory description.", evidenceNote: "Product meaning and exact black variant reviewed", sourceReference: "CJ product and variant detail", confirmed: true });
+  const staffCreatedAgain = await createTekCentralProductFromCj({ supplierProductId: "PID-STAFF-CREATE", supplierVariantId: "VID-STAFF-CREATE", name: "Confirmed USB Accessory", categorySlug: "accessories", evidenceNote: "Product meaning and exact black variant reviewed", sourceReference: "CJ product and variant detail", confirmed: true });
+  assert.equal(staffCreatedProduct.created, true);
+  assert.equal(staffCreatedProduct.product.brand, "Unbranded");
+  assert.equal(staffCreatedProduct.product.model, undefined);
+  assert.equal(staffCreatedProduct.product.shortDescription, "Staff-reviewed USB accessory description.");
+  assert.equal("publicationStatus" in staffCreatedProduct.product && staffCreatedProduct.product.publicationStatus, "INTERNAL_DRAFT");
+  assert.equal(staffCreatedProduct.mapping.supplierVariantId, "VID-STAFF-CREATE");
+  assert.equal(staffCreatedAgain.created, false);
+  assert.equal(staffCreatedAgain.product.id, staffCreatedProduct.product.id);
+  assert.equal((await getInternalProduct(staffCreatedProduct.product.id))?.launchSelection, undefined);
+  const selectedInternalProduct = await setInternalProductLaunchSelection({ productId: staffCreatedProduct.product.id, state: "SELECTED_FOR_LAUNCH", actor: "Launch Staff" });
+  assert.equal(selectedInternalProduct?.launchSelection?.state, "SELECTED_FOR_LAUNCH");
+  assert.equal(selectedInternalProduct?.launchSelection?.updatedBy, "Launch Staff");
+  assert.equal((await getCjCatalogueProduct("PID-STAFF-CREATE"))?.variants[0].launch, undefined);
+  assert.equal((await getCjCatalogueProduct("PID-STAFF-CREATE"))?.rawSourceFingerprint, unresolvedCreationProduct.rawSourceFingerprint);
+  const wrongMappedProduct = normalizeCjProduct({ pid: "PID-WRONG-MAPPING", productSku: "CJ-THERMAL", productNameEn: "Hot Selling Thermal Label Printer", variants: [{ vid: "VID-WRONG-MAPPING", variantSku: "CJ-THERMAL-BLACK", variantNameEn: "Black" }] });
+  await saveCjCatalogueProduct(wrongMappedProduct);
+  const wrongHistoricalMapping = await saveSupplierProductMapping({ productId: "demo-mfp-office", supplierCode: "CJ", supplierSku: "CJ-THERMAL-BLACK", supplierOfferId: "CJ:PID-WRONG-MAPPING:VID-WRONG-MAPPING", supplierProductId: "PID-WRONG-MAPPING", supplierProductSku: "CJ-THERMAL", supplierVariantId: "VID-WRONG-MAPPING", supplierVariantSku: "CJ-THERMAL-BLACK", status: "REVIEW_REQUIRED", evidence: ["Historical candidate"], source: "Historical test fixture" });
+  const correctedProduct = await createTekCentralProductFromCj({ supplierProductId: "PID-WRONG-MAPPING", supplierVariantId: "VID-WRONG-MAPPING", name: "Thermal Label Printer", categorySlug: "printing-office", subcategory: "Printers", evidenceNote: "Reviewed exact thermal label printer variant", sourceReference: "CJ exact product and variant detail", previousMappingId: wrongHistoricalMapping.id, confirmed: true });
+  assert.equal(correctedProduct.created, true);
+  assert.equal(correctedProduct.previousMapping?.status, "SUPERSEDED");
+  assert.equal(correctedProduct.previousMapping?.productId, "demo-mfp-office");
+  assert.equal(correctedProduct.mapping.status, "VERIFIED");
+  assert.equal(correctedProduct.previousMapping?.supersededByMappingId, correctedProduct.mapping.id);
+  assert.equal((await previewCjProductMapping({ supplierProductId: "PID-1", supplierVariantId: "VID-1" })).action, "CREATE_NEW");
+  const sanitizedCjContent = sanitizeCjProductContent("<script>bad()</script><p>USB-C charger.</p> Free shipping. Contact seller");
+  assert.equal(sanitizedCjContent.includes("USB-C charger"), true);
+  assert.equal(/bad\(\)|shipping|seller/i.test(sanitizedCjContent), false);
   await assert.rejects(
     suggestCjMapping({
       tekcentralProductId: "demo-laptop-pro-14",
@@ -1234,7 +1705,7 @@ try {
     0,
   );
   assert.equal(
-    (await listSupplierProductMappings()).filter((mapping) => mapping.status === "VERIFIED").length,
+    (await listSupplierProductMappings()).filter((mapping) => mapping.status === "VERIFIED" && mapping.supplierProductId === "PID-1").length,
     1,
   );
   const staleCandidate = await saveSupplierProductMapping({
@@ -1326,6 +1797,11 @@ try {
   assert.equal(getSupplierRegistryEntry("CJ").defaultOrderMode, "API");
   assert.equal(getSupplierRegistryEntry("SCOOP").capabilities.orderCreate, "UNSUPPORTED");
   assert.equal(getSupplierRegistryEntry("SCOOP").supportedOrderModes.includes("EMAIL"), true);
+  assert.deepEqual(operationalSupplierIds, ["TEKCENTRAL", "CJ", "SCOOP", "SYNTECH", "MUSTEK", "TVR"]);
+  assert.equal(getSupplierRegistryEntry("CJ").capabilities.variantDetail, "SUPPORTED");
+  assert.equal(getSupplierRegistryEntry("CJ").capabilities.logistics, "SUPPORTED");
+  assert.equal(getSupplierRegistryEntry("SCOOP").capabilities.productContent, "SUPPORTED");
+  assert.notEqual(getSupplierRegistryEntry("SCOOP").capabilities.orderCreate, "SUPPORTED");
   assert.equal(hasCapability(cjCapabilities, "logisticsQuote"), true);
   assert.throws(
     () => requireCapability(getSupplierRegistryEntry("MANUAL").capabilities, "supplierPayment"),
@@ -1377,8 +1853,28 @@ try {
   assert.equal(deriveScoopLaunchReadiness({ product: launchProduct, mapping: launchMapping, proposal: { ...approvedProposal, status: "PENDING_APPROVAL" } }).blockers.includes("PRICING_NOT_APPROVED"), true);
   assert.equal(deriveScoopLaunchReadiness({ product: { ...launchProduct, availability: "OUT_OF_STOCK" }, mapping: launchMapping, proposal: approvedProposal }).blockers.includes("OFFER_UNAVAILABLE"), true);
   assert.equal(deriveScoopLaunchReadiness({ product: launchProduct, mapping: launchMapping, proposal: approvedProposal }).status, "READY_FOR_PUBLISH_REVIEW");
+  const unpublished = { state: "NOT_PUBLISHED" as const, versionCount: 0 };
+  assert.equal(deriveScoopProductWorkflow({ product: { ...launchProduct, launchAssortment: undefined }, publication: unpublished }).primaryAction, "Match or create product");
+  assert.equal(deriveScoopProductWorkflow({ product: { ...launchProduct, launchAssortment: undefined }, mapping: { status: "SUGGESTED", productId: "test" } as SupplierProductMapping, publication: unpublished }).primaryAction, "Verify mapping");
+  const logisticsBlockedWorkflow = deriveScoopProductWorkflow({ product: { ...launchProduct, logisticsMetadata: undefined }, mapping: launchMapping, proposal: approvedProposal, publication: unpublished });
+  assert.equal(logisticsBlockedWorkflow.primaryAction, "Resolve logistics");
+  assert.equal(logisticsBlockedWorkflow.completionState, "BLOCKED_LOGISTICS");
+  assert.equal(isSelectedScoopLogisticsException({ product: { ...launchProduct, logisticsMetadata: undefined }, mapping: launchMapping }), true);
+  assert.equal(isSelectedScoopLogisticsException({ product: launchProduct, mapping: launchMapping }), false);
+  assert.equal(isSelectedScoopLogisticsException({ product: { ...launchProduct, logisticsMetadata: undefined, launchAssortment: undefined }, mapping: launchMapping }), false);
+  const pricingBlockedWorkflow = deriveScoopProductWorkflow({ product: launchProduct, mapping: launchMapping, proposal: { ...approvedProposal, status: "PENDING_APPROVAL" }, publication: unpublished });
+  assert.equal(pricingBlockedWorkflow.primaryAction, "Review pricing");
+  assert.equal(pricingBlockedWorkflow.completionState, "BLOCKED_PRICING");
+  const readyForSelection = deriveScoopProductWorkflow({ product: { ...launchProduct, launchAssortment: undefined }, mapping: launchMapping, proposal: approvedProposal, publication: unpublished });
+  assert.equal(readyForSelection.primaryAction, "Select for launch"); assert.equal(readyForSelection.completedLaunchChecks, 4);
+  assert.equal(deriveScoopProductWorkflow({ product: launchProduct, mapping: launchMapping, proposal: approvedProposal, publication: unpublished }).primaryAction, "Review & Publish");
+  assert.equal(deriveScoopProductWorkflow({ product: launchProduct, mapping: launchMapping, proposal: approvedProposal, publication: { state: "PUBLISHED", versionCount: 1 } }).primaryAction, "View storefront");
+  assert.equal(deriveScoopProductWorkflow({ product: launchProduct, mapping: launchMapping, proposal: approvedProposal, publication: { state: "PUBLISHED", versionCount: 1 } }).completionState, "PUBLISHED");
+  assert.equal(deriveScoopProductWorkflow({ product: launchProduct, mapping: launchMapping, proposal: approvedProposal, publication: { state: "PUBLISHED", versionCount: 1, hasUnpublishedChanges: true } }).primaryAction, "Review changes");
   assert.equal(deriveScoopLaunchReadiness({ product: launchProduct, mapping: launchMapping, proposal: { ...approvedProposal, warnings: ["BELOW_TARGET_MARGIN"], warningDetails: [{ code: "BELOW_TARGET_MARGIN", severity: "WARNING", message: "Expected gross margin is below the configured target." }] } }).status, "READY_FOR_PUBLISH_REVIEW");
   assert.equal(deriveScoopLaunchReadiness({ product: launchProduct, mapping: launchMapping, proposal: { ...approvedProposal, warnings: ["BELOW_MINIMUM_PROFIT"], warningDetails: [{ code: "BELOW_MINIMUM_PROFIT", severity: "BLOCKING", message: "Gross profit is below the configured minimum." }] } }).status, "NOT_READY");
+  const staleProposal = { ...approvedProposal, costSnapshot: { supplierCostExVat: (launchProduct.dealerPriceExVat ?? 0) - 1 } } as PricingProposal;
+  assert.equal(deriveScoopLaunchReadiness({ product: launchProduct, mapping: launchMapping, proposal: staleProposal }).blockers.includes("PRICING_STALE"), true);
   const missingLaunch = { ...launchProduct, supplierSku: "U7-LR", manufacturer: "Ubiquiti", description: "Ubiquiti UniFi WiFi 7 Long Range Dual Band AP", logisticsMetadata: undefined };
   const missingVerified = { ...launchProduct, supplierSku: "AF-11", manufacturer: "Ubiquiti", description: "Ubiquiti UISP airFiber 11GHz Radio", launchAssortment: undefined, logisticsMetadata: undefined };
   const missingCudy = { ...launchProduct, supplierSku: "CD-WR1200", manufacturer: "Cudy", description: "Cudy Dual Band WiFi 5 Router", launchAssortment: undefined, logisticsMetadata: undefined };
@@ -1389,6 +1885,32 @@ try {
   assert.equal(selectScoopLogisticsBatchCandidates({ catalogue: Array.from({ length: 30 }, (_, index) => ({ ...missingCudy, supplierSku: `SKU-${index}` })) as ScoopCatalogueProduct[], verified: new Set(), approved: new Set(), limit: 30 }).length, 25);
   assert.equal(matchesScoopManufacturerAlias(missingLaunch, "U7 LR"), true);
   assert.equal(matchesScoopManufacturerAlias(missingCudy, "WR1200 2.0"), false);
+  assert.equal(manufacturerIdentityFailure("CD-WR1200", "MEDIUM"), "HARDWARE_REVISION_REQUIRED");
+  assert.equal(manufacturerIdentityFailure("OTHER", "MEDIUM"), "LOW_IDENTITY_CONFIDENCE");
+  const revisionBlockedWorkflow = deriveScoopProductWorkflow({ product: { ...missingCudy, logisticsLastFailure: "HARDWARE_REVISION_REQUIRED" }, mapping: launchMapping, proposal: approvedProposal, publication: unpublished });
+  assert.equal(revisionBlockedWorkflow.primaryAction, "Confirm hardware revision");
+  const ready = deriveScoopLaunchReadiness({ product: launchProduct, mapping: launchMapping, proposal: approvedProposal });
+  assert.equal(isInScoopLaunchReadinessCohort({ product: { ...launchProduct, launchAssortment: undefined }, mapping: undefined, publication: { state: "NOT_PUBLISHED", versionCount: 0 } }), false);
+  assert.equal(isInScoopLaunchReadinessCohort({ product: { ...launchProduct, launchAssortment: undefined }, mapping: launchMapping, publication: { state: "NOT_PUBLISHED", versionCount: 0 } }), false);
+  assert.equal(isInScoopLaunchReadinessCohort({ product: launchProduct, mapping: launchMapping, publication: { state: "NOT_PUBLISHED", versionCount: 0 } }), true);
+  assert.equal(isInScoopLaunchReadinessCohort({ product: launchProduct, mapping: undefined, publication: { state: "NOT_PUBLISHED", versionCount: 0 } }), true);
+  assert.equal(isInScoopLaunchReadinessCohort({ product: { ...launchProduct, launchAssortment: undefined }, mapping: launchMapping, publication: { state: "PUBLISHED", versionCount: 1 } }), true);
+  assert.equal(isInScoopLaunchReadinessCohort({ product: { ...launchProduct, launchAssortment: undefined }, mapping: launchMapping, publication: { state: "UNPUBLISHED", versionCount: 1 } }), true);
+  assert.equal(deriveScoopPublicationAction({ readiness: ready, publication: { state: "NOT_PUBLISHED", versionCount: 0 } }).primary, "Review & Publish");
+  assert.equal(deriveScoopPublicationAction({ readiness: ready, publication: { state: "PUBLISHED", versionCount: 1, hasUnpublishedChanges: false } }).primary, "View storefront");
+  assert.equal(deriveScoopPublicationAction({ readiness: ready, publication: { state: "PUBLISHED", versionCount: 1, hasUnpublishedChanges: true } }).primary, "Review changes");
+  assert.equal(deriveScoopPublicationAction({ readiness: ready, publication: { state: "UNPUBLISHED", versionCount: 1 } }).primary, "Review & Republish");
+  const publicImageBlocked = deriveScoopProductWorkflow({ product: launchProduct, mapping: launchMapping, proposal: approvedProposal, publication: unpublished, publicationEligibility: { canPublish: false, blockers: ["TekCentral-controlled primary image is missing."] } });
+  assert.equal(publicImageBlocked.completionState, "NEEDS_STAFF_REVIEW");
+  assert.deepEqual(publicImageBlocked.exactBlockers, ["PUBLIC_IMAGE_MISSING"]);
+  const urlConflictReady = deriveScoopProductWorkflow({ product: { ...launchProduct, productPageResolution: { status: "RESOLVED", resolvedAt: new Date().toISOString(), urlStatus: "CONFLICT" } }, mapping: launchMapping, proposal: approvedProposal, publication: unpublished, publicationEligibility: { canPublish: true, blockers: [] } });
+  assert.equal(urlConflictReady.completionState, "READY_FOR_PUBLISH_REVIEW");
+  const commercialProposal = { ...approvedProposal, proposedSellingPriceInclVat: 840 } as PricingProposal;
+  assert.equal(derivePricingPresentation({ proposal: { ...commercialProposal, status: "PENDING_APPROVAL" } }).state, "NEEDS_APPROVAL");
+  assert.equal(derivePricingPresentation({ proposal: commercialProposal }).state, "APPROVED_NOT_PUBLISHED");
+  assert.equal(derivePricingPresentation({ proposal: commercialProposal, publication: { state: "PUBLISHED", activePrice: 840 } }).state, "LIVE");
+  assert.equal(derivePricingPresentation({ proposal: { ...commercialProposal, proposedSellingPriceInclVat: 899 }, publication: { state: "PUBLISHED", activePrice: 840 } }).state, "LIVE_PRICE_CHANGE_PENDING");
+  assert.equal(derivePricingPresentation({ proposal: { ...commercialProposal, status: "SUPERSEDED" } }).state, "HISTORY");
 
   const scoopXmlFixture = `<?xml version="1.0" encoding="UTF-8"?>
 <ScoopPriceList>
@@ -1461,11 +1983,45 @@ try {
   assert.deepEqual(parseScoopDimensions("87.80 x 89.50 x 89.25mm"), { lengthMm: 87.8, widthMm: 89.5, heightMm: 89.25 });
   assert.deepEqual(parseScoopDimensions("12 x 8.5 x 2.8 cm"), { lengthMm: 120, widthMm: 85, heightMm: 28 });
   assert.equal(parseScoopDimensions("119 x broken x 28mm"), undefined);
+  const parsedScoopPage = parseScoopPageLogistics(`Product Weight: 448 g\nProduct Dimensions: 17.5 x 17.5 x 4.3 cm\nPackage Weight: 2.260 kg\nCarton Dimensions: 327×112×86mm`);
+  assert.equal(parsedScoopPage.product?.weightGrams, 448);
+  assert.deepEqual([parsedScoopPage.product?.lengthMm, parsedScoopPage.product?.widthMm, parsedScoopPage.product?.heightMm], [175, 175, 43]);
+  assert.equal(parsedScoopPage.package?.weightGrams, 2260);
+  assert.deepEqual([parsedScoopPage.package?.lengthMm, parsedScoopPage.package?.widthMm, parsedScoopPage.package?.heightMm], [327, 112, 86]);
+  const imperialScoopPage = parseScoopPageLogistics("Unit Weight: 1 lb\nDimensions: 10 x 5 x 2 inches");
+  assert.equal(Math.round(imperialScoopPage.product?.weightGrams ?? 0), 454);
+  assert.deepEqual([imperialScoopPage.product?.lengthMm, imperialScoopPage.product?.widthMm, imperialScoopPage.product?.heightMm], [254, 127, 50.8]);
+  const af11Kit = parseScoopPageLogistics("Antenna Dimensions: 811 × 460 mm\nAntenna Weight: 11.85 kg\nRadio Dimensions: 327 x 112 x 86 mm\nRadio Weight: 2.260 kg");
+  assert.equal(af11Kit.components.length, 2);
+  assert.deepEqual([af11Kit.components[0]?.label, af11Kit.components[0]?.lengthMm, af11Kit.components[0]?.widthMm, af11Kit.components[0]?.heightMm, af11Kit.components[0]?.weightGrams], ["Antenna", 811, 460, undefined, 11850]);
+  assert.deepEqual([af11Kit.components[1]?.label, af11Kit.components[1]?.lengthMm, af11Kit.components[1]?.widthMm, af11Kit.components[1]?.heightMm, af11Kit.components[1]?.weightGrams], ["Radio", 327, 112, 86, 2260]);
+  assert.equal(af11Kit.package, undefined);
   const scoopPageUrl = "https://scoop.co.za/linkbasic-flylead-fly-2g.html";
   const searchFixture = `<ol><li class="item product product-item"><a href="${scoopPageUrl}">Linkbasic flylead</a><span>SKU: FLY-2G</span></li></ol>`;
   assert.equal(resolveScoopProductPageFromSearch(searchFixture, "FLY-2G").productPageUrl, scoopPageUrl);
   assert.equal(resolveScoopProductPageFromSearch(searchFixture, "OTHER").status, "NOT_FOUND");
   const productPageFixture = `<html><body><h1>Linkbasic flylead</h1><table><tr><th>SKU</th><td>FLY-2G</td></tr></table><div>Specifications Dimensions: 20 x 10 x 5cm Weight: 0.25kg</div></body></html>`;
+  const rgEg710xsFixture = `<html><body><h1>Reyee cloud-managed router</h1><p>SKU: RG-EG710XS</p><h2>Details</h2><p>A cloud-managed router for high-performance business networks.</p><h2>More Information</h2><table><tr><th>Ethernet Ports</th><td>3x Gigabit LAN/WAN; 3x 2.5GbE LAN/WAN</td></tr><tr><th>SFP Ports</th><td>2x 10Gbps</td></tr><tr><th>Maximum Power Consumption</th><td>14W</td></tr><tr><th>Mounting</th><td>Rack-Mount</td></tr><tr><th>Operating Temperature</th><td>0°C to 40°C</td></tr><tr><th>PoE Input</th><td>Supported</td></tr><tr><th>PoE Output</th><td>Not supported</td></tr><tr><th>Supported Voltage Range</th><td>100–240V AC</td></tr><tr><th>System Memory</th><td>2GB</td></tr><tr><th>Dimensions</th><td>440 × 210 × 43.6 mm</td></tr><tr><th>Weight</th><td>2.65 kg</td></tr><tr><th>Package Dimensions</th><td>500 × 300 × 100 mm</td></tr><tr><th>Dealer Price</th><td>R1</td></tr></table><a href="https://www.reyee.com/resources/RG-EG710XS-datasheet.pdf">Datasheet</a><section class="reviews">Imported review</section><section class="related-products">Related products</section></body></html>`;
+  const parsedProductContent = parseScoopProductContent(rgEg710xsFixture, "https://scoop.co.za/reyee-rg-eg710xs.html");
+  assert.equal(parsedProductContent.pageSku, "RG-EG710XS");
+  assert.equal(parsedProductContent.overview, "A cloud-managed router for high-performance business networks.");
+  assert.equal(parsedProductContent.specifications.find((item) => item.name === "Max Power Consumption")?.value, "14W");
+  assert.equal(parsedProductContent.specifications.some((item) => /Package|Dealer/i.test(item.name)), false);
+  assert.equal(parsedProductContent.documents[0]?.type, "DATASHEET");
+  assert.equal(parsedProductContent.documents[0]?.verified, true);
+  assert.equal(normalizeSpecificationLabel("Maximum Power Consumption"), "Max Power Consumption");
+  const mergedSpecs = mergeProductSpecifications([{ name: "System Memory", value: "1GB", source: "STAFF", origin: "STAFF_EDITED" }], parsedProductContent.specifications);
+  assert.equal(mergedSpecs.conflicts.some((item) => item.proposed.name === "System Memory"), true);
+  assert.equal(mergedSpecs.specifications.find((item) => item.name === "System Memory")?.value, "1GB");
+  assert.equal(deriveProductContentStatus({ overview: "Fallback overview", overviewOrigin: "AUTO_DEFAULT" }), "CONTENT_BASIC");
+  assert.equal(deriveProductContentStatus({ overview: parsedProductContent.overview, overviewOrigin: "APPROVED_SOURCE_DERIVED", specifications: parsedProductContent.specifications }), "CONTENT_ENRICHED");
+  const untrustedDocument = parseScoopProductContent('<p>SKU: RG-EG710XS</p><a href="https://retailer.example/file.pdf">Datasheet</a>', "https://scoop.co.za/reyee-rg-eg710xs.html");
+  assert.equal(untrustedDocument.documents.length, 0);
+  const physicalSpecs = productPhysicalSpecifications({ logisticsMetadata: { status: "COMPLETE", source: "MANUFACTURER", sourceReference: "https://manufacturer.example/spec", capturedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), fetchedAt: new Date().toISOString(), weightGrams: 2650, lengthMm: 440, widthMm: 210, heightMm: 43.6, packageWeightGrams: 3000, packageLengthMm: 500, packageWidthMm: 300, packageHeightMm: 100 } } as ScoopCatalogueProduct);
+  assert.deepEqual(physicalSpecs.map((item) => item.name), ["Dimensions", "Weight"]);
+  assert.equal(physicalSpecs.some((item) => /package/i.test(item.name)), false);
+  assert.equal(manufacturerContentDocuments({ supplierSku: "AF-11", logisticsMetadata: { status: "COMPLETE", source: "MANUFACTURER", sourceReference: "https://dl.ui.com/datasheets/airfiber/airFiber_AF-11FX_DS.pdf", identityConfidence: "HIGH", capturedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), fetchedAt: new Date().toISOString() } } as ScoopCatalogueProduct)[0]?.type, "DATASHEET");
+  assert.equal(parseScoopProductContent(rgEg710xsFixture.replaceAll("RG-EG710XS", "AF-11KIT-H"), "https://scoop.co.za/incorrect-af-11-kit.html").pageSku, "AF-11KIT-H");
   const extractedLogistics = extractScoopLogisticsMetadata(productPageFixture, scoopPageUrl);
   assert.equal(extractedLogistics.status, "COMPLETE");
   assert.equal(extractedLogistics.weightGrams, 250);
@@ -1481,11 +2037,52 @@ try {
   assert.equal(enrichedScoop.product.logisticsMetadata?.status, "COMPLETE");
   assert.equal(enrichedScoop.product.logisticsMetadata?.source, "SUPPLIER_PRODUCT_PAGE");
   assert.equal(logisticsFetchCalls, 2);
+  const exactPagePreview = await previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: "SKU: FLY-2G\nProduct Weight: 250 g\nProduct Dimensions: 20 x 10 x 5 cm" });
+  assert.equal(exactPagePreview.identityConfidence, "HIGH");
+  assert.equal(exactPagePreview.status, "COMPLETE");
+  const wrongPagePreview = await previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: "SKU: OTHER\nProduct Weight: 250 g\nProduct Dimensions: 20 x 10 x 5 cm" });
+  assert.equal(wrongPagePreview.blocker, "IDENTITY_MISMATCH");
+  const wrongContentPreview = await previewScoopProductContent({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: rgEg710xsFixture });
+  assert.equal(wrongContentPreview.blocker, "IDENTITY_MISMATCH");
+  assert.equal(wrongContentPreview.specifications.length, 0);
+  const ambiguousPagePreview = await previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: "Linkbasic cable\nProduct Weight: 250 g" });
+  assert.equal(ambiguousPagePreview.blocker, "IDENTITY_LOW_CONFIDENCE");
+  const noMeasurementPreview = await previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: "SKU: FLY-2G\nNo physical specifications supplied." });
+  assert.equal(noMeasurementPreview.blocker, "MEASUREMENTS_NOT_FOUND");
+  const partialPagePreview = await previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: "SKU: FLY-2G\nProduct Weight: 250 g" });
+  assert.equal(partialPagePreview.status, "WEIGHT_ONLY");
+  assert.deepEqual(partialPagePreview.missingEvidence, ["Complete dimensions"]);
+  const untrustedManufacturerPreview = await previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceType: "MANUFACTURER_PRODUCT_PAGE", sourceUrl: "https://retailer.example/fly-2g", content: "SKU: FLY-2G\nProduct Weight: 250 g" });
+  assert.equal(untrustedManufacturerPreview.blocker, "PRODUCT_URL_UNKNOWN");
+  assert.equal(extractScoopHardwareRevision("CD-WR1200", "Cudy WR1200 2.0 hardware revision"), "2.0");
+  assert.equal(extractScoopHardwareRevision("CD-WR1200", "Cudy WR1200 router"), undefined);
+  const beforeCommercial = await getScoopCatalogueProduct("FLY-2G");
+  const packageCapture = "SKU: FLY-2G\nPackage Weight: 300 g\nPackage Dimensions: 21 x 11 x 6 cm";
+  const packagePreview = await previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: packageCapture });
+  assert.ok(packagePreview.conflict);
+  await assert.rejects(applyScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: packageCapture, contentFingerprint: packagePreview.contentFingerprint }), /explicit staff confirmation/);
+  const appliedPage = await applyScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: packageCapture, contentFingerprint: packagePreview.contentFingerprint, confirmConflict: true });
+  assert.equal(appliedPage.outcome, "UPDATED");
+  assert.equal(appliedPage.product?.logisticsMetadata?.shippingBasis, "PACKAGE");
+  assert.equal((await getScoopCatalogueProduct("FLY-2G"))?.productPageResolution?.urlStatus, "VERIFIED");
+  const repeatedPage = await applyScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: packageCapture, contentFingerprint: packagePreview.contentFingerprint, confirmConflict: true });
+  assert.equal(repeatedPage.outcome, "UNCHANGED");
+  const afterCommercial = await getScoopCatalogueProduct("FLY-2G");
+  assert.equal(afterCommercial?.dealerPriceExVat, beforeCommercial?.dealerPriceExVat);
+  assert.equal(afterCommercial?.totalStock, beforeCommercial?.totalStock);
+  const cachedPage = await fetchScoopPageLogistics({ supplierSku: "FLY-2G", fetchImpl: async () => { throw new Error("cache should avoid request"); } });
+  assert.equal(cachedPage.outcome, "CACHED");
+  const blockedProduct = await getScoopCatalogueProduct("ZERO-STOCK");
+  await saveScoopCatalogueProduct({ ...blockedProduct!, productPageResolution: { status: "RESOLVED", productPageUrl: "https://scoop.co.za/zero.html", resolvedAt: new Date().toISOString() } });
+  const blockedPage = await fetchScoopPageLogistics({ supplierSku: "ZERO-STOCK", fetchImpl: async () => new Response("Forbidden", { status: 403 }) });
+  assert.equal(blockedPage.outcome, "FAILED");
+  assert.equal(blockedPage.outcome === "FAILED" ? blockedPage.reason : undefined, "SOURCE_BLOCKED");
+  assert.equal((await getScoopCatalogueProduct("ZERO-STOCK"))?.logisticsLastFailure, "SOURCE_BLOCKED");
   await enrichScoopProductLogistics("FLY-2G", { fetchImpl: logisticsFetch });
   assert.equal(logisticsFetchCalls, 2);
   const failingFetch: typeof fetch = async () => new Response("Unavailable", { status: 503 });
   await enrichScoopProductLogistics("FLY-2G", { fetchImpl: failingFetch, force: true });
-  assert.equal((await getScoopCatalogueProduct("FLY-2G"))?.logisticsMetadata?.weightGrams, 250);
+  assert.equal((await getScoopCatalogueProduct("FLY-2G"))?.logisticsMetadata?.weightGrams, 300);
   assert.equal((await getScoopCatalogueProduct("FLY-2G"))?.logisticsLastFailure, "NETWORK_ERROR");
   const adminOverride = await saveScoopAdminLogistics({ supplierSku: "FLY-2G", weightGrams: 300, actor: "Test Staff" });
   assert.equal(adminOverride?.product.logisticsMetadata?.source, "ADMIN");
@@ -1501,7 +2098,7 @@ try {
   assert.equal((await getScoopCatalogueProduct("FLY-2G"))?.logisticsMetadata?.source, "ADMIN");
   const clearedOverride = await clearScoopAdminLogistics("FLY-2G", "Test Staff");
   assert.equal(clearedOverride?.product.logisticsMetadata?.source, "SUPPLIER_PRODUCT_PAGE");
-  assert.equal(clearedOverride?.product.logisticsMetadata?.weightGrams, 250);
+  assert.equal(clearedOverride?.product.logisticsMetadata?.weightGrams, 300);
   const validCsv = "sku,weight_grams,length_mm,width_mm,height_mm\nZERO-STOCK,500,,,,\nUNKNOWN-STOCK,,100,200,300";
   const csvPreview = await previewScoopLogisticsCsv(validCsv);
   assert.equal(csvPreview.summary.rowsRead, 2);
@@ -1538,6 +2135,14 @@ try {
     { ...extractedLogistics, source: "MANUFACTURER", capturedAt: timestamp, updatedAt: timestamp },
     { ...extractedLogistics, source: "SUPPLIER_FEED", capturedAt: timestamp, updatedAt: timestamp },
   ])?.source, "SUPPLIER_FEED");
+  const manufacturerProduct = { ...extractedLogistics, source: "MANUFACTURER" as const, measurementScope: "PRODUCT" as const, shippingBasis: "PRODUCT_DIMENSIONS_FALLBACK" as const, weightGrams: 250, lengthMm: 200, widthMm: 100, heightMm: 50, capturedAt: timestamp, updatedAt: timestamp };
+  const scoopPackage = { ...extractedLogistics, source: "SUPPLIER_PRODUCT_PAGE" as const, measurementScope: "PACKAGE" as const, packageWeightGrams: 500, packageLengthMm: 300, packageWidthMm: 200, packageHeightMm: 100, capturedAt: timestamp, updatedAt: timestamp };
+  const fieldResolved = effectiveScoopLogisticsMetadata([manufacturerProduct, scoopPackage]);
+  assert.equal(fieldResolved?.shippingBasis, "PACKAGE");
+  assert.equal(fieldResolved?.weightGrams, 500);
+  assert.equal(fieldResolved?.productSource, "MANUFACTURER");
+  assert.equal(fieldResolved?.packageSource, "SUPPLIER_PRODUCT_PAGE");
+  assert.equal(effectiveScoopLogisticsMetadata([{ ...manufacturerProduct, source: "ADMIN", weightGrams: 700 }, scoopPackage])?.weightGrams, 700);
   assert.deepEqual(stockedScoopBranches((await getScoopCatalogueProduct("FLY-2G"))!), ["CPT", "JHB", "DBN"]);
   const reducedScoopSync = await syncScoopCatalogueProducts({
     ...parsedScoop,
@@ -1600,9 +2205,21 @@ try {
   assert.equal(applyPricingRounding(123.4, "NEAREST_5"), 125);
   assert.equal(applyPricingRounding(123.4, "NEAREST_10"), 120);
   assert.equal(applyPricingRounding(123.4, "END_99"), 123.99);
+  assert.equal(applyPricingRoundingAtOrAbove(102.4995, "NEAREST_1"), 103);
+  const ugreenPricingResult = calculateProposedPrice({ supplierId: "CJ", supplierOfferId: "CJ:UGREEN:2M", currency: "USD", landedCostExVat: 39.13, sourceCostAmount: 2.35, sourceCurrency: "USD", fxRateUsed: 16.6505, fxCapturedAt: new Date().toISOString(), pricingTimestamp: new Date().toISOString() }, { ...engineSettings, roundingMode: "NEAREST_1" });
+  assert.equal(ugreenPricingResult.proposedSellingPriceInclVat, 103);
+  assert.equal(ugreenPricingResult.grossProfit, 50.44);
+  assert.equal(ugreenPricingResult.warnings.includes("BELOW_MINIMUM_PROFIT"), false);
+  assert.equal(canApprovePricingProposal(ugreenPricingResult), true);
+  const invalidUgreenPricingResult = calculateManualPriceOverride({ supplierId: "CJ", supplierOfferId: "CJ:UGREEN:2M", currency: "USD", landedCostExVat: 39.13, sourceCostAmount: 2.35, sourceCurrency: "USD", fxRateUsed: 16.6505, fxCapturedAt: new Date().toISOString(), pricingTimestamp: new Date().toISOString() }, { ...engineSettings, roundingMode: "NEAREST_1" }, 102, 103);
+  assert.equal(invalidUgreenPricingResult.grossProfit, 49.57);
+  assert.equal(canApprovePricingProposal(invalidUgreenPricingResult), false);
   const cjInput = cjLandedCostPricingInput({ supplierOfferId: "CJ:VID", currency: "USD", productCost: 5.83, shippingCost: 16.43, fxRate: 18, fxBufferPercent: 3, pricingTimestamp: new Date().toISOString() });
   assert.equal(cjInput.landedCostExVat, 412.7);
   assert.equal(cjInput.fxRateUsed, 18);
+  const catalogueCjInput = cjLandedCostPricingInput({ supplierOfferId: "CJ:CATALOGUE", currency: "USD", productCost: 2.35, shippingCost: 99, fxRate: 18, fxBufferPercent: 0, pricingTimestamp: new Date().toISOString(), includeShippingInCost: false });
+  assert.equal(catalogueCjInput.landedCostExVat, 42.3);
+  assert.equal(catalogueCjInput.sourceCostAmount, 2.35);
   const missingFxInput = cjLandedCostPricingInput({ supplierOfferId: "CJ:VID", currency: "USD", productCost: 5.83, shippingCost: 16.43, fxBufferPercent: 0, pricingTimestamp: new Date().toISOString() });
   assert.ok(calculateProposedPrice(missingFxInput, engineSettings).warnings.includes("MISSING_FX_RATE"));
   const staleFxInput = { ...cjInput, pricingTimestamp: new Date(Date.now() - 48 * 3_600_000).toISOString() };
@@ -1638,8 +2255,12 @@ try {
   assert.equal(updatedSettingsStore.audit[0]?.setting, "pricing.vatRatePercent");
   assert.equal((await getBusinessSettings()).pricing.vatRatePercent, 16);
   const proposal = await savePricingProposal({ ...scoopEngineResult, productId: "demo-router-gigabit", supplierId: "SCOOP", supplierOfferId: "SCOOP:FLY-2G", costSnapshot: scoopEngineInput, status: "PENDING_APPROVAL" });
-  assert.equal((await setPricingProposalStatus(proposal.id, "APPROVED"))?.status, "APPROVED");
+  const actorAuditedProposal = await setPricingProposalStatus(proposal.id, "APPROVED", "Pricing Staff");
+  assert.equal(actorAuditedProposal?.status, "APPROVED");
+  assert.equal(actorAuditedProposal?.approvedBy, "Pricing Staff");
+  assert.ok(actorAuditedProposal?.approvedAt);
   const rejectedProposal = await savePricingProposal({ ...scoopEngineResult, productId: "demo-router-gigabit", supplierId: "SCOOP", supplierOfferId: "SCOOP:FLY-2G", costSnapshot: scoopEngineInput, status: "PENDING_APPROVAL" });
+  assert.equal((await getPricingProposal(proposal.id))?.status, "APPROVED");
   assert.equal((await setPricingProposalStatus(rejectedProposal.id, "REJECTED"))?.status, "REJECTED");
   const overrideSource = await savePricingProposal({ ...acbPricing, productId: "override-test-product", supplierId: "SCOOP", supplierOfferId: "SCOOP:ACB-ISP", costSnapshot: scoopPricingInput({ supplierOfferId: "SCOOP:ACB-ISP", dealerPriceExVat: 475, referenceRetailInclVat: 650, pricingTimestamp: new Date().toISOString() }), settingsSnapshot: engineSettings, status: "APPROVED" });
   const countBeforePreview = (await listPricingProposals()).length;
@@ -1686,6 +2307,8 @@ try {
   assert.equal(highMatch.confidenceLevel, "HIGH");
   assert.equal(mediumMatch.confidenceLevel, "MEDIUM");
   assert.equal(lowGenericMatch.confidenceLevel, "LOW");
+  assert.equal(exactScoopProductIdentityMatches(acbOffer, { sku: "TC-ACB-ISP", brand: "Ubiquiti", model: "ACB-ISP" }), true);
+  assert.equal(exactScoopProductIdentityMatches(acbOffer, { brand: "Ubiquiti", model: "U7-LR" }), false);
   assert.ok(highMatch.confidence > lowGenericMatch.confidence);
   assert.throws(() => requireWeakMappingConfirmation("LOW", false), /WEAK_MAPPING_CONFIRMATION_REQUIRED/);
   assert.doesNotThrow(() => requireWeakMappingConfirmation("LOW", true));
@@ -1695,14 +2318,19 @@ try {
   assert.equal(suggestScoopCategory(acbOffer).slug, "networking");
   await syncScoopCatalogueProducts({ ...parsedScoop, products: [...parsedScoop.products, ...parsedLiveShapeScoop.products] });
   await assert.rejects(() => createTekCentralProductFromScoop({ supplierSku: "ACB-ISP", name: titleSuggestions[0], categorySlug: "", confirmed: true }), /CATEGORY_CONFIRMATION_REQUIRED/);
-  const createdFromScoop = await createTekCentralProductFromScoop({ supplierSku: "ACB-ISP", name: titleSuggestions[0], categorySlug: "networking", subcategory: "Wi-Fi", confirmed: true });
+  const createdFromScoop = await createTekCentralProductFromScoop({ supplierSku: "ACB-ISP", name: titleSuggestions[0], categorySlug: "networking", subcategory: "Access Points", confirmed: true });
   assert.equal(createdFromScoop.product.publicationStatus, "INTERNAL_DRAFT");
   assert.equal(createdFromScoop.product.images[0], acbOffer.imageUrl);
   assert.equal(createdFromScoop.product.provenance.sourceImage?.source, "SCOOP");
   assert.equal(createdFromScoop.product.provenance.sourceSupplierOfferId, "SCOOP:ACB-ISP");
+  assert.equal(createdFromScoop.product.model, "ACB-ISP");
   assert.equal(createdFromScoop.mapping.status, "VERIFIED");
   assert.equal(createdFromScoop.mapping.supplierSku, "ACB-ISP");
   assert.equal(createdFromScoop.mapping.productId, createdFromScoop.product.id);
+  const repeatedCreation = await createTekCentralProductFromScoop({ supplierSku: "ACB-ISP", name: titleSuggestions[0], categorySlug: "networking", subcategory: "Access Points", confirmed: true });
+  assert.equal(repeatedCreation.reused, true);
+  assert.equal(repeatedCreation.product.id, createdFromScoop.product.id);
+  assert.equal(repeatedCreation.mapping.id, createdFromScoop.mapping.id);
   const automaticScoopOrder: BackendOrder = {
     ...order,
     id: "automatic-scoop-order",
@@ -1769,7 +2397,7 @@ try {
   delete process.env.OPERATIONS_NOTIFICATION_EMAIL;
   const missingConfigSupplierOrder = { ...notificationSupplierOrder, id: "SO-SCOOP-NOTIFICATION-NOCONFIG", events: [...automaticSupplierOrder.events] };
   await saveSupplierOrder(missingConfigSupplierOrder);
-  assert.equal((await notifyNewScoopActionRequired(automaticScoopOrder, missingConfigSupplierOrder, mockMailTransport))?.failureReason, "CONFIGURATION_MISSING");
+  assert.equal((await notifyNewScoopActionRequired(automaticScoopOrder, missingConfigSupplierOrder, mockMailTransport))?.failureReason, "SMTP_CONFIG_MISSING");
   const historicalSupplierOrder = { ...notificationSupplierOrder, id: "SO-SCOOP-HISTORICAL", events: [...automaticSupplierOrder.events] };
   await saveSupplierOrder(historicalSupplierOrder);
   assert.equal(await getSupplierOrderNotification(historicalSupplierOrder.id, "SCOOP_ACTION_REQUIRED"), undefined);
@@ -1778,9 +2406,12 @@ try {
   assert.equal((await acknowledgeSupplierOrder(automaticSupplierOrder.id))?.status, "ACKNOWLEDGED");
   assert.equal((await approveSupplierOrder(automaticSupplierOrder.id))?.status, "APPROVED");
   await assert.rejects(() => markManualSupplierOrderOrdered({ id: automaticSupplierOrder.id, supplierReference: "" }), /reference is required/);
-  const orderedScoop = await markManualSupplierOrderOrdered({ id: automaticSupplierOrder.id, supplierReference: "SCOOP-REAL-TEST", note: "Controlled test reference." });
+  await assert.rejects(() => markManualSupplierOrderOrdered({ id: automaticSupplierOrder.id, supplierReference: "X".repeat(121) }), /120 characters/);
+  const orderedScoop = await markManualSupplierOrderOrdered({ id: automaticSupplierOrder.id, supplierReference: "SCOOP-REAL-TEST", note: "Controlled test reference.", actor: "Authenticated Procurement Staff" });
   assert.equal(orderedScoop?.status, "ORDERED");
   assert.equal(orderedScoop?.supplierOrderReference, "SCOOP-REAL-TEST");
+  assert.equal(orderedScoop?.orderedBy, "Authenticated Procurement Staff");
+  await assert.rejects(() => markManualSupplierOrderOrdered({ id: automaticSupplierOrder.id, supplierReference: "SCOOP-DUPLICATE" }), /approved|already been placed/);
   await syncScoopCatalogueProducts({ ...parsedLiveShapeScoop, products: parsedLiveShapeScoop.products.map((product) => ({ ...product, dealerPriceExVat: 500 })) });
   assert.equal((await getAdminSupplierOrder(automaticSupplierOrder.id))?.itemLines[0]?.unitCost, 475);
   await syncScoopCatalogueProducts(parsedLiveShapeScoop);
@@ -1797,12 +2428,29 @@ try {
   await saveOrder(ambiguousOrder);
   assert.equal((await autoAllocatePaidOrder(ambiguousOrder.orderNumber)).allocationsCreated, 0);
   assert.equal((await getInternalProduct(createdFromScoop.product.id))?.publicationStatus, "INTERNAL_DRAFT");
+  const cjEnrichment = buildSupplierProductEnrichment({ supplier: "CJ", supplierProductId: "PID-UGREEN", supplierVariantId: "VID-2M", productName: "UGREEN Green Link Ethernet Cable", variantName: "UGREEN Green Link Ethernet Cable 2M", brand: "UGREEN", description: "<p>Network cable type: twisted pair<br>Length: 1m 2m<br>Color: green</p>", category: "Networking", subcategory: "Network cables", primaryImageUrl: "https://supplier.example/primary.jpg", imageCandidates: ["https://supplier.example/secondary.jpg"], retrievedAt: "2026-10-11T00:00:00.000Z", sourceFingerprint: "ugreen-fixture" });
+  assert.equal(approvedPublicationPrice({ status: "APPROVED", proposedSellingPriceInclVat: 103 }), 103);
+  assert.equal(approvedPublicationPrice({ status: "PENDING_APPROVAL", proposedSellingPriceInclVat: 103 }), undefined);
+  assert.equal(approvedPublicationPrice(undefined), undefined);
+  assert.equal(cjEnrichment.title, "UGREEN Green Link Ethernet Cable 2M");
+  assert.equal(cjEnrichment.specifications.find((item) => item.name === "Cable length")?.value, "2 m");
+  assert.equal(cjEnrichment.specifications.find((item) => item.name === "Colour")?.value, "Green");
+  assert.equal(cjEnrichment.specifications.find((item) => item.name === "Network cable type")?.value, "Twisted pair");
+  assert.equal(cjEnrichment.specifications.some((item) => /category|speed|shield|conductor|connector|certification/i.test(item.name)), false);
+  assert.equal(cjEnrichment.longDescription?.includes("1 m"), false);
+  assert.equal(cjEnrichment.specifications.every((item) => item.evidence.supplierVariantId === "VID-2M"), true);
+  assert.equal(cjEnrichment.imageCandidates.length, 2);
+  const scoopEnrichment = buildSupplierProductEnrichment({ supplier: "SCOOP", productName: "Ubiquiti airCube ISP", brand: "Ubiquiti", description: "Compact wireless access point.", category: "Networking", retrievedAt: "2026-10-11T00:00:00.000Z" });
+  assert.equal(scoopEnrichment.evidence.title.supplier, "SCOOP");
+  const changedSupplierSuggestion = buildSupplierProductEnrichment({ supplier: "CJ", supplierProductId: "PID-UGREEN", supplierVariantId: "VID-2M", productName: "UGREEN Green Link Ethernet Cable", variantName: "UGREEN Green Link Ethernet Cable 2M", brand: "UGREEN", description: "Network cable type: twisted pair. Color: green. Updated supplier wording.", category: "Networking", retrievedAt: "2026-10-12T00:00:00.000Z", sourceFingerprint: "ugreen-fixture-updated" });
+  assert.notEqual(changedSupplierSuggestion.fingerprint, cjEnrichment.fingerprint);
   assert.equal(products.some((product) => product.id === createdFromScoop.product.id), false);
   assert.equal((await getPublicationSummary(createdFromScoop.product.id)).state, "NOT_PUBLISHED");
   assert.equal(await getPublicationPreview(createdFromScoop.product.id), undefined);
   await setScoopLaunchAssortmentState({ supplierSku: "ACB-ISP", state: "SELECTED_FOR_LAUNCH" });
   await saveScoopAdminLogistics({ supplierSku: "ACB-ISP", weightGrams: 280, lengthMm: 88, widthMm: 90, heightMm: 89 });
   const publicationPricing = await generateScoopPricingProposal({ productId: createdFromScoop.product.id, supplierSku: "ACB-ISP" });
+  assert.equal((await generateScoopPricingProposal({ productId: createdFromScoop.product.id, supplierSku: "ACB-ISP" })).id, publicationPricing.id);
   const approvedPublicationPricing = await setPricingProposalStatus(publicationPricing.id, "APPROVED");
   assert.equal((await getPublicationSummary(createdFromScoop.product.id)).state, "READY_FOR_PUBLISH_REVIEW");
   const sourceImageUrl = createdFromScoop.product.provenance.sourceImage!.originalUrl;
@@ -1815,6 +2463,7 @@ try {
   assert.equal((await findIngestedPublicImage({ internalProductId: createdFromScoop.product.id }))?.contentHash, storedPublicationImage.contentHash);
   const review = await getPublicationReview(createdFromScoop.product.id);
   assert.equal(review.currentApprovedProposal?.id, approvedPublicationPricing?.id);
+  assert.equal(review.draft.price, approvedPublicationPricing?.proposedSellingPriceInclVat);
   assert.equal(review.image.sourceImageUrl, sourceImageUrl);
   assert.equal(review.image.publicImageUrl, storedPublicationImage.publicUrl);
   assert.equal(review.draft.images[0], storedPublicationImage.publicUrl);
@@ -1828,22 +2477,58 @@ try {
   assert.ok(review.draft.description?.includes("is part of TekCentral's Networking range"));
   const longSeoTitle = defaultSeoTitle("A very long verified public product title that is deliberately longer than a normal search result title");
   assert.ok(longSeoTitle.length <= 60);
-  const staffContent = preparePublicationContentDefaults({ product: createdFromScoop.product, draft: { ...review.draft, seoTitle: "Staff SEO title", description: "Staff description" }, origins: { seoTitle: "STAFF_EDITED", description: "STAFF_EDITED" } });
+  const staffContent = preparePublicationContentDefaults({ product: createdFromScoop.product, draft: { ...review.draft, seoTitle: "Staff SEO title", description: "Staff description", overview: "Staff overview" }, origins: { seoTitle: "STAFF_EDITED", description: "STAFF_EDITED", overview: "STAFF_EDITED" } });
   assert.equal(staffContent.draft.seoTitle, "Staff SEO title");
   assert.equal(staffContent.draft.description, "Staff description");
+  assert.equal(staffContent.draft.overview, "Staff overview");
   const advisoryOnlyEligibility = derivePublicationEligibility({ draft: { ...review.draft, shortDescription: "", specifications: [], seoTitle: "", seoDescription: "", deliveryDisplay: "" }, readinessStatus: "READY_FOR_PUBLISH_REVIEW", readinessBlockers: [], hasApprovedPrice: true, publicImageUrl: storedPublicationImage.publicUrl });
-  assert.deepEqual(advisoryOnlyEligibility.blockers, []);
+  assert.deepEqual(advisoryOnlyEligibility.blockers, ["Short description is required."]);
   const missingImageEligibility = derivePublicationEligibility({ draft: review.draft, readinessStatus: "READY_FOR_PUBLISH_REVIEW", readinessBlockers: [], hasApprovedPrice: true });
   assert.deepEqual(missingImageEligibility.blockers, ["TekCentral-controlled primary image is missing."]);
   const publicationDraft = review.draft;
-  const firstVersion = await publishProduct({ internalProductId: createdFromScoop.product.id, pricingProposalId: publicationPricing.id, idempotencyKey: "publish-acb-v1", actor: "Test Staff", snapshot: { ...publicationDraft, name: "Ubiquiti airCube ISP Access Point" } });
+  const activeBeforeSavedDraft = await getPublicProductBySlug(review.draft.slug);
+  const savedDraft = await savePublicationDraft({ internalProductId: createdFromScoop.product.id, snapshot: { ...publicationDraft, overview: "Persisted draft overview", seoTitle: "Persisted SEO", deliveryDisplay: "Delivery calculated at checkout", specifications: [{ name: "Wi-Fi standard", value: "WiFi 4", isKey: true }], documents: [] }, contentOrigins: { overview: "STAFF_EDITED", seoTitle: "STAFF_EDITED", deliveryDisplay: "STAFF_EDITED" }, actor: "Test Staff" });
+  assert.equal((await getPublicationReview(createdFromScoop.product.id)).draft.overview, "Persisted draft overview");
+  assert.equal((await getPublicationPreview(createdFromScoop.product.id))?.product.overview, "Persisted draft overview");
+  assert.equal((await getPublicationPreview(createdFromScoop.product.id))?.product.price, approvedPublicationPricing?.proposedSellingPriceInclVat);
+  assert.equal((await getPublicationPreview(createdFromScoop.product.id))?.priceAvailable, true);
+  assert.equal((await getPublicProductBySlug(review.draft.slug))?.overview, activeBeforeSavedDraft?.overview);
+  assert.ok(savedDraft.savedAt);
+  const pdf = Buffer.from("%PDF-1.4\nTekCentral test\n%%EOF");
+  const uploadedDocument = await uploadPublicDocument({ filename: "datasheet.pdf", mimeType: "application/pdf", base64: pdf.toString("base64") });
+  assert.deepEqual(await readPublicDocument(uploadedDocument.publicUrl.split("/").at(-1)!), pdf);
+  assert.equal((await uploadPublicDocument({ filename: "copy.pdf", mimeType: "application/pdf", base64: pdf.toString("base64") })).contentHash, uploadedDocument.contentHash);
+  await assert.rejects(() => uploadPublicDocument({ filename: "unsafe.exe", mimeType: "application/octet-stream", base64: pdf.toString("base64") }), /DOCUMENT_TYPE_UNSUPPORTED/);
+  await assert.rejects(() => uploadPublicDocument({ filename: "active.pdf", mimeType: "application/pdf", base64: Buffer.from("%PDF-1.4\n/JavaScript\n%%EOF").toString("base64") }), /DOCUMENT_CONTENT_INVALID/);
+  await assert.rejects(() => importPublicDocument({ sourceUrl: "https://retailer.example/doc.pdf", trustedHosts: ["ui.com"] }, async () => new Response(pdf, { headers: { "content-type": "application/pdf" } })), /DOCUMENT_SOURCE_UNTRUSTED/);
+  assert.equal((await importPublicDocument({ sourceUrl: "https://ui.com/doc.pdf", trustedHosts: ["ui.com"] }, async () => new Response(pdf, { headers: { "content-type": "application/pdf" } }))).contentHash, uploadedDocument.contentHash);
+  const savedDraftVersion = await publishSavedDraft({ internalProductId: createdFromScoop.product.id, pricingProposalId: publicationPricing.id, idempotencyKey: "publish-saved-draft", actor: "Test Staff" });
+  assert.equal(savedDraftVersion.snapshot.overview, "Persisted draft overview");
+  assert.equal((await getPublicProductBySlug(review.draft.slug))?.overview, "Persisted draft overview");
+  const firstVersion = await publishProduct({ internalProductId: createdFromScoop.product.id, pricingProposalId: publicationPricing.id, idempotencyKey: "publish-acb-v1", actor: "Test Staff", snapshot: { ...publicationDraft, name: "Ubiquiti airCube ISP Access Point", overview: "Approved enriched overview.", specifications: [{ name: "Ethernet Ports", value: "4x Gigabit", source: "MANUFACTURER", origin: "APPROVED_SOURCE_DERIVED" }], documents: [{ type: "DATASHEET", title: "Datasheet", url: "https://ui.com/downloads/acb-isp.pdf", verified: true, source: "MANUFACTURER", origin: "APPROVED_SOURCE_DERIVED" }] } });
+  assert.equal((await getPublicationSummary(createdFromScoop.product.id)).activeImage, storedPublicationImage.publicUrl);
   const duplicateVersion = await publishProduct({ internalProductId: createdFromScoop.product.id, pricingProposalId: publicationPricing.id, idempotencyKey: "publish-acb-v1", actor: "Test Staff", snapshot: { ...publicationDraft, name: "Changed title must not overwrite" } });
   assert.equal(duplicateVersion.id, firstVersion.id);
   assert.equal((await getPublicProductBySlug(review.draft.slug))?.name, "Ubiquiti airCube ISP Access Point");
+  assert.equal((await getPublicProductBySlug(review.draft.slug))?.overview, "Approved enriched overview.");
+  assert.equal((await getPublicProductBySlug(review.draft.slug))?.documents?.[0]?.type, "DATASHEET");
+  assert.equal("source" in (await getPublicProductBySlug(review.draft.slug))!.specifications[0], false);
+  assert.equal("origin" in (await getPublicProductBySlug(review.draft.slug))!.specifications[0], false);
   assert.equal("supplierSku" in (await getPublicProductBySlug(review.draft.slug))!, false);
+  const publicAvailability = (await getPublicProductBySlug(review.draft.slug))!.availability;
+  const publicationAvailability = (await getPublicationReview(createdFromScoop.product.id)).availability;
+  assert.equal(publicationAvailability.state, publicAvailability.state);
+  assert.equal(publicationAvailability.label, publicAvailability.label);
+  assert.equal(publicationAvailability.freshness, publicAvailability.freshness);
+  assert.equal(publicationAvailability.purchasable, publicAvailability.purchasable);
+  assert.equal(typeof publicAvailability.label, "string");
+  assert.equal("source" in publicAvailability, false);
+  assert.equal("quantity" in publicAvailability, false);
+  assert.equal("supplierCode" in publicAvailability, false);
   const secondVersion = await publishProduct({ internalProductId: createdFromScoop.product.id, pricingProposalId: publicationPricing.id, idempotencyKey: "publish-acb-v2", actor: "Test Staff", snapshot: { ...publicationDraft, name: "Ubiquiti airCube ISP Wi-Fi Access Point" } });
   assert.notEqual(secondVersion.id, firstVersion.id);
   assert.equal(firstVersion.snapshot.name, "Ubiquiti airCube ISP Access Point");
+  assert.equal(firstVersion.snapshot.overview, "Approved enriched overview.");
   await assert.rejects(() => publishProduct({ internalProductId: createdFromScoop.product.id, pricingProposalId: publicationPricing.id, idempotencyKey: "publish-acb-identical", actor: "Test Staff", snapshot: { ...publicationDraft, name: "Ubiquiti airCube ISP Wi-Fi Access Point" } }), /No public changes to publish/);
   assert.equal(hasMaterialPublicChanges(secondVersion.snapshot, { ...secondVersion.snapshot, description: ` ${secondVersion.snapshot.description ?? ""} ` }), false);
   assert.equal(hasMaterialPublicChanges(secondVersion.snapshot, { ...secondVersion.snapshot, name: `${secondVersion.snapshot.name} updated` }), true);
@@ -1861,7 +2546,7 @@ try {
   const unpublishedReview = await getPublicationReview(createdFromScoop.product.id);
   assert.equal(unpublishedReview.state, "UNPUBLISHED");
   assert.equal(unpublishedReview.eligibility.canPublish, true);
-  assert.equal(unpublishedReview.versions.length, 3);
+  assert.equal(unpublishedReview.versions.length, 4);
   const unpublishedPreview = await getPublicationPreview(createdFromScoop.product.id);
   assert.equal(unpublishedPreview?.publicationState, "UNPUBLISHED");
   assert.equal(unpublishedPreview?.product.name, rollbackVersion.snapshot.name);
@@ -1870,11 +2555,12 @@ try {
   assert.equal("supplierSku" in unpublishedPreview!.product, false);
   const republished = await publishProduct({ internalProductId: createdFromScoop.product.id, pricingProposalId: publicationPricing.id, idempotencyKey: "republish-acb", actor: "Test Staff", snapshot: { ...publicationDraft, name: "Ubiquiti airCube ISP Access Point" } });
   assert.ok(republished.version > rollbackVersion.version);
-  assert.equal((await getPublicationReview(createdFromScoop.product.id)).versions.length, 4);
+  assert.equal((await getPublicationReview(createdFromScoop.product.id)).versions.length, 5);
   assert.equal(firstVersion.snapshot.name, "Ubiquiti airCube ISP Access Point");
   assert.equal((await listPublicProducts()).some((item) => item.id === createdFromScoop.product.id), true);
   const updatedPrice = await createPricingOverride({ proposalId: publicationPricing.id, overridePriceInclVat: 799, overrideReason: "Publication version price regression test.", reasonCategory: "MARKET_PRICE" });
   await setPricingProposalStatus(updatedPrice.proposal.id, "APPROVED");
+  assert.equal((await getPublicationPreview(createdFromScoop.product.id))?.product.price, 799);
   assert.equal((await getPublicProductBySlug(review.draft.slug))?.price, firstVersion.snapshot.price);
   const priceVersion = await publishProduct({ internalProductId: createdFromScoop.product.id, pricingProposalId: updatedPrice.proposal.id, idempotencyKey: "publish-acb-price-v2", actor: "Test Staff", snapshot: { ...publicationDraft, name: "Ubiquiti airCube ISP Access Point" } });
   assert.equal(priceVersion.snapshot.price, 799);
@@ -1923,6 +2609,7 @@ try {
   assert.equal((await findIngestedPublicImage({ internalProductId: "product-image-test" }))?.sourceImageUrl, "https://images.example.test/product-updated.jpg");
   assert.notEqual(changedSource.publicUrl, ingested.publicUrl);
   await assert.rejects(() => ingestPublicProductImage({ sourceUrl: "https://images.example.test/page", sourceType: "TEST" }, (async () => new Response("<html></html>", { status: 200, headers: { "Content-Type": "text/html" } })) as typeof fetch), /IMAGE_CONTENT_TYPE_UNSUPPORTED/);
+  await assert.rejects(() => ingestPublicProductImage({ sourceUrl: "https://images.example.test/spoof.jpg", sourceType: "TEST" }, (async () => new Response("<html><script></script></html>", { status: 200, headers: { "Content-Type": "image/jpeg" } })) as typeof fetch), /IMAGE_CONTENT_INVALID/);
   const shippingSettings = (await getBusinessSettings()).shipping;
   await updateShippingSettings({ ...shippingSettings, scoopMode: "MANUAL_QUOTE" });
   const unavailablePolicy = await createShippingOptionsResult({ items: [{ productId: createdFromScoop.product.id, quantity: 1 }], destination: { country: "South Africa", province: "Western Cape", postalCode: "7460" } });
@@ -2032,6 +2719,36 @@ try {
   assert.equal(websitePreview.summary.valid, 2);
   assert.equal(websitePreview.summary.rejected, 0);
   const firstWebsiteImport = await applyScoopWebsiteImport(websiteCsv, websitePreview.importFingerprint);
+  assert.equal(firstWebsiteImport.urlBackfill.verified, 0);
+  assert.equal((await getScoopCatalogueProduct("ACB-ISP"))?.productPageResolution?.urlStatus, "REVIEW_REQUIRED");
+  assert.equal((await getScoopCatalogueProduct("ACB-ISP"))?.productPageResolution?.urlSource, "WEBSITE_OBSERVATION");
+  assert.equal((await backfillScoopCanonicalUrls()).verified, 0);
+  assert.equal(normalizeScoopProductUrl("https://www.scoop.co.za/test#details"), "https://scoop.co.za/test");
+  assert.equal(normalizeScoopProductUrl("https://example.com/test"), undefined);
+  assert.equal(normalizeScoopProductUrl("not a url"), undefined);
+  const urlImportContent = "sku,canonicalProductUrl,observedSku\nUNKNOWN-STOCK,https://scoop.co.za/unknown-stock.html,UNKNOWN-STOCK";
+  const urlImportPreview = await previewScoopUrlImport(urlImportContent);
+  assert.equal(urlImportPreview.rows[0]?.action, "ADD");
+  assert.equal((await applyScoopUrlImport(urlImportContent, urlImportPreview.fingerprint)).added, 1);
+  assert.equal((await previewScoopUrlImport(urlImportContent)).rows[0]?.action, "KEEP");
+  assert.equal((await previewScoopUrlImport("sku,url\nMISSING-SKU,https://scoop.co.za/missing.html")).rows[0]?.action, "REJECT");
+  assert.equal((await previewScoopUrlImport("sku,url\nZERO-STOCK,https://example.com/zero.html")).rows[0]?.action, "REJECT");
+  assert.equal((await previewScoopUrlImport("sku,url\nZERO-STOCK,https://scoop.co.za/one.html\nZERO-STOCK,https://scoop.co.za/two.html")).rows.every((row) => row.action === "CONFLICT"), true);
+  assert.equal((await previewScoopUrlImport("sku,url\nZERO-STOCK,https://scoop.co.za/shared.html\nUNKNOWN-STOCK,https://scoop.co.za/shared.html")).rows.every((row) => row.action === "CONFLICT"), true);
+  assert.equal((await previewScoopUrlImport("sku,url,observedSku\nZERO-STOCK,https://scoop.co.za/zero.html,OTHER-SKU")).rows[0]?.action, "CONFLICT");
+  const staffReview = await previewScoopStaffUrl({ supplierSku: "UNKNOWN-STOCK", url: "https://scoop.co.za/unknown-stock.html" });
+  assert.equal(staffReview.confidence, "MEDIUM");
+  const staffMismatch = await previewScoopStaffUrl({ supplierSku: "UNKNOWN-STOCK", url: "https://scoop.co.za/unknown-stock.html", pageContent: "SKU: OTHER" });
+  assert.equal(staffMismatch.action, "REJECT");
+  const staffExact = await previewScoopStaffUrl({ supplierSku: "UNKNOWN-STOCK", url: "https://scoop.co.za/unknown-stock.html", pageContent: "SKU: UNKNOWN-STOCK" });
+  assert.equal(staffExact.confidence, "HIGH");
+  assert.equal((await applyScoopStaffUrl({ supplierSku: "UNKNOWN-STOCK", url: "https://scoop.co.za/unknown-stock.html", pageContent: "SKU: UNKNOWN-STOCK", fingerprint: staffExact.fingerprint })).outcome, "UNCHANGED");
+  const zeroBeforeQuarantine = await getScoopCatalogueProduct("ZERO-STOCK");
+  await quarantineScoopCanonicalUrl({ supplierSku: "ZERO-STOCK", observedSku: "ZERO-KIT", reason: "Exact page SKU mismatch." });
+  const zeroAfterQuarantine = await getScoopCatalogueProduct("ZERO-STOCK");
+  assert.equal(zeroAfterQuarantine?.productPageResolution?.urlStatus, "CONFLICT");
+  assert.equal(zeroAfterQuarantine?.logisticsSources?.some((source) => source.source === "MANUFACTURER"), zeroBeforeQuarantine?.logisticsSources?.some((source) => source.source === "MANUFACTURER"));
+  assert.equal(zeroAfterQuarantine?.logisticsSources?.some((source) => source.source === "SUPPLIER_PRODUCT_PAGE"), false);
   assert.equal(firstWebsiteImport.newWebsiteOnly, 1);
   assert.equal(firstWebsiteImport.mergedWithXml, 1);
   assert.equal((await getScoopCatalogueProduct("WEB-ONLY"))?.reconciliationStatus, "WEBSITE_ONLY");
@@ -2257,8 +2974,17 @@ try {
   );
   const releasedOrder = await releaseOperationalHold("TC-2026-000010");
   assert.equal(releasedOrder?.operationalHold?.active, false);
+  await assert.rejects(
+    updateAdminOrderStatus("TC-2026-000010", "SHIPPED"),
+    /Shipment evidence is required/,
+  );
+  await updateShipment("TC-2026-000010", { courierName: "Test courier" });
   const shippedAfterRelease = await updateAdminOrderStatus("TC-2026-000010", "SHIPPED");
   assert.equal(shippedAfterRelease?.status, "SHIPPED");
+  await assert.rejects(
+    setOperationalHold({ orderNumber: "TC-2026-000010", reason: "OTHER_MANUAL" }),
+    /Hold notes are required/,
+  );
 
   const notedOrder = await addInternalNote("TC-2026-000010", "Call customer before dispatch.");
   assert.equal(notedOrder?.internalNotes?.length, 1);
@@ -2352,6 +3078,7 @@ try {
     createAdminShipment({
       orderNumber: "TC-2026-000012",
       items: [{ orderItemId: "demo-ssd-1tb", quantity: 1 }],
+      courier: "Manual courier",
     }),
     /Shipment quantity exceeds ordered quantity/,
   );
@@ -2597,14 +3324,13 @@ try {
   const protectedOrders = await generateSupplierOrders("TC-2026-000026");
   await mapSupplierOrderSkus(protectedOrders![0]);
   await approveSupplierOrder(protectedOrders![0].id);
-  await createSupplierAllocation({
-    orderNumber: "TC-2026-000026",
-    supplierCode: "MUSTEK",
-    orderItemIds: ["demo-ssd-1tb"],
-  });
   await assert.rejects(
-    generateSupplierOrders("TC-2026-000026"),
-    /Total active supplier quantity cannot exceed customer ordered quantity/,
+    createSupplierAllocation({
+      orderNumber: "TC-2026-000026",
+      supplierCode: "MUSTEK",
+      orderItemIds: ["demo-ssd-1tb"],
+    }),
+    /Supplier allocation is locked because procurement has begun/,
   );
 
   await saveOrder({
@@ -2676,14 +3402,11 @@ try {
   await releaseOperationalHold("TC-2026-000029");
   assert.equal((await mockSubmitSupplierOrder(heldSubmitOrders![0].id, "SUCCESS"))?.status, "SUBMITTED");
 
-  await createSupplierAllocation({
+  await assert.rejects(createSupplierAllocation({
     orderNumber: "TC-2026-000023",
     supplierCode: "MUSTEK",
     orderItemIds: ["demo-laptop-pro-14"],
-  });
-  const partialReallocation = await generateSupplierOrders("TC-2026-000023");
-  assert.equal(partialReallocation?.length, 1);
-  assert.equal(partialReallocation?.[0]?.itemLines[0]?.quantity, 1);
+  }), /Supplier allocation is locked because procurement has begun/);
 
   await assert.rejects(
     dispatchSupplierOrder({
@@ -2720,6 +3443,7 @@ try {
 
   const customerView = toCustomerOrder({
     ...supplierBaseOrder,
+    customerAccountId: "customer-private",
     internalNotes: [
       {
         id: "note-private",
@@ -2756,6 +3480,7 @@ try {
   assert.equal("operationalHold" in customerView, false);
   assert.equal("parcels" in customerView, false);
   assert.equal("shipments" in customerView, false);
+  assert.equal("customerAccountId" in customerView, false);
 
   const returnReviewOrder = await updateAdminReturnStatus(
     "return-admin-1",
@@ -3220,6 +3945,109 @@ try {
   );
   assert.equal((await getAdminSupplierOrder("SO-CJ-UNKNOWN"))?.externalSubmission?.status, "CREATED");
   assert.equal((await getAdminSupplierOrder("SO-CJ-UNKNOWN"))?.externalSubmission?.externalOrderNumber, "CJ-ORDER-FOUND");
+
+  const cjCrossSupplierOffer = normalizeCjProduct({ pid: "PID-CROSS-SUPPLIER", productSku: "CJ-ACB-ISP", productNameEn: "Ubiquiti airCube ISP Access Point", brandName: createdFromScoop.product.brand, model: createdFromScoop.product.model, variants: [{ vid: "VID-CROSS-SUPPLIER", variantSku: "CJ-ACB-ISP-ZA", variantNameEn: "Standard" }] });
+  await saveCjCatalogueProduct(cjCrossSupplierOffer);
+  const crossSupplierPreview = await previewCjProductMapping({ supplierProductId: "PID-CROSS-SUPPLIER", supplierVariantId: "VID-CROSS-SUPPLIER" });
+  assert.equal(crossSupplierPreview.action, "MAP_EXISTING");
+  assert.equal(crossSupplierPreview.existingProduct?.id, createdFromScoop.product.id);
+  const crossSupplierMapping = await createTekCentralProductFromCj({ supplierProductId: "PID-CROSS-SUPPLIER", supplierVariantId: "VID-CROSS-SUPPLIER", name: createdFromScoop.product.name, categorySlug: "networking", evidenceNote: "Exact manufacturer and model match to existing Product", sourceReference: "Manufacturer product identity", confirmed: true });
+  assert.equal(crossSupplierMapping.created, false);
+  assert.equal(crossSupplierMapping.product.id, createdFromScoop.product.id);
+  assert.deepEqual(new Set((await listSupplierProductMappings()).filter((mapping) => mapping.productId === createdFromScoop.product.id && mapping.status === "VERIFIED").map((mapping) => mapping.supplierCode)), new Set(["SCOOP", "CJ"]));
+
+  const initialGeneral = await getSettingsDomain("general");
+  assert.equal(initialGeneral.revision, 0);
+  assert.equal(initialGeneral.settings.find((item) => item.key === "defaultCurrency")?.effectiveValue, "ZAR");
+  const savedGeneral = await patchSettingsDomain("general", { revision: 0, changes: { businessName: "TekCentral Test" } }, "TekCentral Staff");
+  assert.equal(savedGeneral.revision, 1);
+  assert.equal(savedGeneral.settings.find((item) => item.key === "businessName")?.configuredValue, "TekCentral Test");
+  assert.equal(savedGeneral.settings.find((item) => item.key === "tradingName")?.configuredValue, undefined);
+  await assert.rejects(patchSettingsDomain("general", { revision: 1, changes: { defaultCurrency: "USD" }, confirmHighRisk: true }), /invalid value/);
+  await assert.rejects(patchSettingsDomain("general", { revision: 1, changes: { defaultCountry: "ZA" } }), /explicit confirmation/);
+  const confirmedGeneral = await patchSettingsDomain("general", { revision: 1, changes: { defaultCountry: "ZA" }, confirmHighRisk: true }, "TekCentral Staff");
+  assert.equal(confirmedGeneral.revision, 2);
+  await assert.rejects(patchSettingsDomain("general", { revision: 1, changes: { tradingName: "Stale edit" } }), SettingsConflictError);
+  const history = await getSettingsHistory("general");
+  assert.equal(history.history[0].key, "defaultCountry");
+  assert.equal(history.history[0].previousValue, undefined);
+  assert.equal(history.history[0].newValue, "ZA");
+  assert.equal(history.history[0].actor, "TekCentral Staff");
+  assert.equal(Number.isNaN(Date.parse(history.history[0].timestamp)), false);
+  const initialProductSettings = await getSettingsDomain("products");
+  assert.equal(initialProductSettings.settings.find((item) => item.key === "minimumContentState")?.effectiveValue, "CONTENT_BASIC");
+  assert.equal(initialProductSettings.settings.find((item) => item.key === "minimumContentState")?.capability, "EDITABLE");
+  assert.equal(initialProductSettings.settings.find((item) => item.key === "requireControlledPrimaryImage")?.capability, "SYSTEM_PROTECTED");
+  const savedProductSettings = await patchSettingsDomain("products", { revision: 0, changes: { supplierEnrichmentEnabled: "false" } }, "Product Policy Test");
+  assert.equal(savedProductSettings.revision, 1);
+  assert.equal((await getProductPolicySettings()).supplierEnrichmentEnabled, false);
+  await assert.rejects(patchSettingsDomain("products", { revision: 0, changes: { seoSuggestionsEnabled: "false" } }), SettingsConflictError);
+  assert.equal((await getSettingsHistory("products")).history[0].key, "supplierEnrichmentEnabled");
+  const strictContentEligibility = derivePublicationEligibility({ draft: review.draft, readinessStatus: "READY_FOR_PUBLISH_REVIEW", readinessBlockers: [], hasApprovedPrice: true, publicImageUrl: storedPublicationImage.publicUrl, contentStatus: "CONTENT_BASIC", minimumContentState: "CONTENT_ENRICHED" });
+  assert.equal(strictContentEligibility.canPublish, false);
+  assert.equal(strictContentEligibility.blockers.includes("Product content must reach CONTENT_ENRICHED."), true);
+  const initialSupplierSettings = await getSettingsDomain("suppliers");
+  assert.equal(initialSupplierSettings.settings.find((item) => item.key === "sourcePriceFreshnessHours")?.effectiveValue, "24");
+  assert.equal(initialSupplierSettings.settings.find((item) => item.key === "catalogueRefreshInterval")?.capability, "NOT_SUPPORTED");
+  await assert.rejects(patchSettingsDomain("suppliers", { revision: 0, changes: { stockFreshnessHours: "12" } }), /explicit confirmation/);
+  const savedSupplierSettings = await patchSettingsDomain("suppliers", { revision: 0, changes: { stockFreshnessHours: "12", sourcePriceFreshnessHours: "48" }, confirmHighRisk: true }, "Supplier Policy Test");
+  assert.equal(savedSupplierSettings.revision, 1);
+  assert.deepEqual(await getSupplierPolicySettings(), { sourcePriceFreshnessHours: 48, stockFreshnessHours: 12 });
+  const freshnessBoundaryEvidence = deriveCjPricingEvidence({ product: cjProduct, variant: { ...pricingReadyVariant, costEvidence: { ...pricingReadyVariant.costEvidence, capturedAt: "2026-01-01T00:00:00.000Z" } }, mapping: strongEvidenceMapping, fxRate: 18, fxRateUpdatedAt: "2026-01-02T06:00:00.000Z", sourcePriceFreshnessHours: 48, now: new Date("2026-01-02T06:00:00.000Z") });
+  assert.equal(freshnessBoundaryEvidence.blockers.includes("SOURCE_PRICE_STALE"), false);
+  const originalPayfastId = process.env.PAYFAST_MERCHANT_ID; const originalPayfastKey = process.env.PAYFAST_MERCHANT_KEY; process.env.PAYFAST_MERCHANT_ID = "sandbox-id"; process.env.PAYFAST_MERCHANT_KEY = "must-not-leak";
+  const integrations = await getSettingsDomain("integrations");
+  assert.equal(integrations.settings.find((item) => item.key === "payfastCredential"), undefined);
+  assert.equal(JSON.stringify(integrations).includes("must-not-leak"), false);
+  assert.equal(new Set(paymentGatewayRegistry.map((item) => item.provider)).size, 7);
+  assert.equal(paymentGatewayRegistry.every((item) => item.credentialFields.every((field) => field.label.length > 0)), true);
+  assert.equal(paymentGatewayRegistry.find((item) => item.provider === "PAYFAST")?.implementation.includes("CHECKOUT_AVAILABLE"), true);
+  assert.equal(paymentGatewayRegistry.find((item) => item.provider === "OZOW")?.implementation.includes("CHECKOUT_AVAILABLE"), false);
+  const initialPayments = await getPaymentSettings();
+  assert.equal(initialPayments.defaultGateway, "PAYFAST");
+  assert.equal(initialPayments.gateways.find((item) => item.provider === "PAYFAST")?.profiles.find((profile) => profile.mode === "SANDBOX")?.configured, true);
+  assert.equal(JSON.stringify(initialPayments).includes("must-not-leak"), false);
+  await assert.rejects(updatePayfastSettings({ revision: initialPayments.revision, mode: "LIVE", confirmHighRisk: true }), /Live credentials are not configured/);
+  const testedPayfast = await testPayfastConfiguration();
+  assert.equal(testedPayfast.result, "CONFIGURATION_VALID");
+  assert.equal(mapPayfastStatus("COMPLETE"), "PAID");
+  assert.equal(mapPayfastStatus("CANCELLED"), "CANCELLED");
+  assert.equal(getPayfastProfileStatus("LIVE").configured, false);
+  if (originalPayfastId === undefined) delete process.env.PAYFAST_MERCHANT_ID; else process.env.PAYFAST_MERCHANT_ID = originalPayfastId;
+  if (originalPayfastKey === undefined) delete process.env.PAYFAST_MERCHANT_KEY; else process.env.PAYFAST_MERCHANT_KEY = originalPayfastKey;
+  const health = await getSystemHealth();
+  assert.equal(typeof health.checkedAt, "string");
+  assert.equal(health.checks.every((item) => item.service && item.status && item.checkedAt && item.summary), true);
+  const pricingBeforeMigration = await getPricingSettingsView();
+  assert.equal(defaultPricingSettings.vatRatePercent, 15);
+  assert.equal(defaultPricingSettings.pricingBands[0].minimumGrossProfit, 50);
+  await assert.rejects(patchPricingSettings(pricingBeforeMigration.pricing, { revision: pricingBeforeMigration.revision, confirmHighRisk: false }), /explicit confirmation/);
+  const pricingAfterNoop = await patchPricingSettings(pricingBeforeMigration.pricing, { revision: pricingBeforeMigration.revision, confirmHighRisk: true });
+  assert.equal(pricingAfterNoop.pricing.vatRatePercent, pricingBeforeMigration.pricing.vatRatePercent);
+  assert.deepEqual(pricingAfterNoop.pricing.pricingBands, pricingBeforeMigration.pricing.pricingBands);
+  const shippingBeforeMigration = await getShippingSettingsView();
+  await assert.rejects(patchShippingSettings(shippingBeforeMigration.shipping, { revision: shippingBeforeMigration.revision, confirmHighRisk: false }), /explicit confirmation/);
+  const shippingAfterNoop = await patchShippingSettings(shippingBeforeMigration.shipping, { revision: shippingBeforeMigration.revision, confirmHighRisk: true });
+  assert.deepEqual(shippingAfterNoop.shipping, shippingBeforeMigration.shipping);
+  const originalFxRecipient = process.env.FX_PRICING_NOTIFICATION_EMAIL; process.env.FX_PRICING_NOTIFICATION_EMAIL = "environment@example.com";
+  const fallbackNotifications = await getEffectiveNotificationSettings();
+  assert.equal(fallbackNotifications.notifications.fxPricingRecipientEmail, "environment@example.com");
+  assert.equal(fallbackNotifications.source, "ENVIRONMENT");
+  const savedNotifications = await updateNotificationSettings({ ...defaultNotificationSettings, fxPricingRecipientEmail: "saved@example.com" }, { revision: fallbackNotifications.revision, confirmHighRisk: true });
+  assert.equal(savedNotifications.notifications.fxPricingRecipientEmail, "saved@example.com");
+  assert.equal(savedNotifications.source, "DATABASE");
+  let settingsTestSends = 0; const settingsTest = await sendSettingsNotificationTest({ send: async (message) => { settingsTestSends += 1; assert.equal(message.to, "saved@example.com"); } });
+  assert.equal(settingsTest?.status, "SENT"); assert.equal(settingsTestSends, 1);
+  await assert.rejects(updateNotificationSettings({ ...defaultNotificationSettings, fxPricingRecipientEmail: "invalid" }, { revision: savedNotifications.revision, confirmHighRisk: true }), /valid email/);
+  await assert.rejects(updateNotificationSettings(defaultNotificationSettings, { revision: fallbackNotifications.revision, confirmHighRisk: true }), SettingsConflictError);
+  if (originalFxRecipient === undefined) delete process.env.FX_PRICING_NOTIFICATION_EMAIL; else process.env.FX_PRICING_NOTIFICATION_EMAIL = originalFxRecipient;
+  const automationBefore = await getAutomationSettingsView();
+  assert.deepEqual(automationBefore.automation.fxImpactThresholds, { ignorePercent: 3, monitorPercent: 3, reviewPercent: 7, criticalPercent: 12 });
+  const automationAfter = await patchAutomationSettings(automationBefore.automation, { revision: automationBefore.revision, confirmHighRisk: true });
+  assert.equal(automationAfter.automation.fxScheduledReconciliationHours, 24);
+  const supplierHub = await getSupplierHub();
+  assert.deepEqual(supplierHub.suppliers.map((item) => item?.supplier.id), ["TEKCENTRAL", "CJ", "SCOOP", "SYNTECH", "MUSTEK", "TVR"]);
+  assert.equal(supplierHub.suppliers.every((item) => item && item.mappings.verified >= 0 && item.orders.attention >= 0), true);
 } finally {
   chdir(originalCwd);
   if (originalCjApiKey === undefined) delete process.env.CJ_API_KEY;
@@ -3330,5 +4158,74 @@ assert.equal("bufferAmount" in publicQuote.fulfilmentGroups[0], false);
 assert.equal("zone" in publicQuote.fulfilmentGroups[0], false);
 assert.equal("internalSupplierCode" in publicQuote.fulfilmentGroups[0], false);
 assert.equal("source" in publicQuote.fulfilmentGroups[0], false);
+
+const availabilityNow = new Date("2026-10-11T12:00:00.000Z");
+assert.equal(quantityAvailability(12), "IN_STOCK");
+assert.equal(quantityAvailability(5), "LOW_STOCK");
+assert.equal(quantityAvailability(0), "OUT_OF_STOCK");
+assert.equal(quantityAvailability(undefined), undefined);
+assert.equal(availabilityFreshness("2026-10-11T11:00:00.000Z", 24, availabilityNow), "FRESH");
+assert.equal(availabilityFreshness("2026-10-09T11:00:00.000Z", 24, availabilityNow), "STALE");
+assert.equal(resolveProductAvailability([{ state: "AVAILABLE_FROM_SUPPLIER", source: "SCOOP", observedAt: "2026-10-11T11:00:00.000Z" }], availabilityNow).state, "AVAILABLE_FROM_SUPPLIER");
+assert.equal(resolveProductAvailability([{ state: "IN_STOCK", source: "STALE", observedAt: "2026-10-09T11:00:00.000Z" }], availabilityNow).state, "CHECK_REQUIRED");
+assert.equal(resolveProductAvailability([
+  { state: "OUT_OF_STOCK", source: "SUPPLIER_A", observedAt: "2026-10-11T11:00:00.000Z" },
+  { state: "LOW_STOCK", source: "SUPPLIER_B", observedAt: "2026-10-11T11:00:00.000Z" },
+], availabilityNow).state, "LOW_STOCK");
+assert.equal(resolveProductAvailability([], availabilityNow).state, "AVAILABILITY_UNKNOWN");
+assert.equal(availabilityPurchasable("DELIVERY_CHECK_REQUIRED"), true);
+assert.equal(availabilityPurchasable("CHECK_REQUIRED"), false);
+assert.equal(availabilityPurchasable("AVAILABILITY_UNKNOWN"), false);
+assert.equal(resolveProductAvailability([{ state: "DELIVERY_CHECK_REQUIRED", source: "CJ_VARIANT", observedAt: "2026-10-11T11:00:00.000Z" }], availabilityNow).state, "DELIVERY_CHECK_REQUIRED");
+assert.equal(resolveProductAvailability([{ state: "AVAILABLE_FROM_SUPPLIER", source: "SCOOP_OFFER", observedAt: "2026-10-11T11:00:00.000Z" }], availabilityNow).label, "Available");
+const productCardSource = readFileSync(join(originalCwd, "src/components/commerce/ProductCard.tsx"), "utf8");
+const productDetailSource = readFileSync(join(originalCwd, "src/pages/ProductDetailPage.tsx"), "utf8");
+const cartPageSource = readFileSync(join(originalCwd, "src/pages/CartPage.tsx"), "utf8");
+assert.equal(productCardSource.includes("productAvailability(product)"), true);
+assert.equal(productDetailSource.includes("productAvailability(product)"), true);
+assert.equal(productCardSource.includes("Stock TBC"), false);
+assert.equal(productDetailSource.includes("Stock TBC"), false);
+assert.equal(cartPageSource.includes("!productAvailability(product).purchasable"), true);
+assert.equal(backendServerSource.includes("availabilityPurchasable(product.availabilityState)"), true);
+
+assert.equal(classifyNotificationFailure(new Error("CONFIGURATION_MISSING")), "SMTP_CONFIG_MISSING");
+assert.equal(classifyNotificationFailure(new Error("getaddrinfo ENOTFOUND smtp.example.test")), "SMTP_DNS_FAILED");
+assert.equal(classifyNotificationFailure(new Error("SMTP_535")), "SMTP_AUTH_FAILED");
+assert.equal(classifyNotificationFailure(new Error("SMTP_TIMEOUT")), "SMTP_CONNECTION_FAILED");
+assert.equal(classifyNotificationFailure(new Error("SMTP_550")), "RECIPIENT_REJECTED");
+assert.equal(classifyNotificationFailure(new Error("unexpected")), "DELIVERY_FAILED");
+assert.equal(classifyNotificationFailure(undefined), "UNKNOWN");
+const orderWorkflowSource = readFileSync(join(originalCwd, "src/lib/admin-order-workflow.ts"), "utf8");
+assert.equal(orderWorkflowSource.includes('label: "External Order"'), false);
+assert.equal(orderWorkflowSource.includes('label: "CJ Preflight"'), false);
+assert.equal(orderWorkflowSource.includes('"Add supplier tracking when available"'), true);
+assert.equal(adminOrderDetailSource.includes("disabled={!allocationDirty}"), true);
+assert.equal(adminOrderDetailSource.includes("allocationLocked && currentAllocation"), true);
+
+assert.equal(adminSectionForPath("/admin"), "dashboard");
+assert.equal(adminSectionForPath("/admin/orders/TC-2026-000018"), "orders");
+assert.equal(adminSectionForPath("/admin/refunds"), "returns");
+assert.equal(adminSectionForPath("/admin/products/product-1/publishing"), "products");
+assert.equal(adminSectionForPath("/admin/supplier-mappings"), "suppliers");
+assert.equal(adminSectionForPath("/admin/suppliers/cj/imported"), "suppliers");
+assert.equal(adminSectionForPath("/admin/settings/general"), "settings");
+assert.equal(adminSectionForPath("/admin/settings/pricing"), "settings");
+assert.equal(adminSectionForPath("/admin/settings/health"), "settings");
+const adminShellSource = readFileSync(join(originalCwd, "src/components/admin/AdminShell.tsx"), "utf8");
+const appRoutesSource = readFileSync(join(originalCwd, "src/App.tsx"), "utf8");
+assert.equal(adminShellSource.includes('label: "Returns & Refunds"'), true);
+assert.equal(adminShellSource.includes('label: "Supplier Mappings"'), false);
+assert.equal(adminShellSource.includes("sidebarPreferenceKey"), true);
+assert.equal(adminShellSource.includes('aria-label="Open admin navigation"'), true);
+assert.equal(adminShellSource.includes('aria-label="Close admin navigation"'), true);
+assert.equal(adminShellSource.includes("enabledSupplierRegistry.map"), false);
+for (const route of ["/admin/orders", "/admin/returns", "/admin/refunds", "/admin/supplier-orders", "/admin/supplier-mappings", "/admin/suppliers", "/admin/products", "/admin/reports", "/admin/settings"]) assert.equal(appRoutesSource.includes(`path="${route}"`), true);
+for (const route of ["/admin/settings/general", "/admin/settings/commerce", "/admin/settings/products", "/admin/settings/suppliers", "/admin/settings/notifications", "/admin/settings/integrations", "/admin/settings/automation", "/admin/settings/users-security", "/admin/settings/system", "/admin/settings/health"]) assert.equal(appRoutesSource.includes(`path="${route}"`), true);
+assert.equal(appRoutesSource.includes('path="/admin/suppliers/:supplierId/:section"'), true);
+const supplierWorkspaceSource = readFileSync(join(originalCwd, "src/pages/admin/AdminSupplierWorkspacePage.tsx"), "utf8");
+assert.equal(supplierWorkspaceSource.includes("Stock & Delivery"), true);
+assert.equal(supplierWorkspaceSource.includes("No persisted synchronization history is available."), true);
+const supplierOrdersSource = readFileSync(join(originalCwd, "src/pages/admin/AdminSupplierOrdersPage.tsx"), "utf8");
+assert.equal(supplierOrdersSource.includes("matchesSupplier"), true);
 
 console.log("PayFast backend tests passed.");

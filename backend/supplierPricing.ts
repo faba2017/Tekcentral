@@ -24,11 +24,20 @@ export function applyPricingRounding(value: number, mode: PricingRoundingMode) {
   return money(Math.round(value / increment) * increment);
 }
 
+export function applyPricingRoundingAtOrAbove(value: number, mode: PricingRoundingMode) {
+  const rounded = applyPricingRounding(value, mode);
+  if (rounded >= value - 0.000_001) return rounded;
+  if (mode === "NONE") return money(Math.ceil(value * 100) / 100);
+  if (mode === "END_99") return money(Math.ceil(value + 0.01) - 0.01);
+  const increment = mode === "NEAREST_5" ? 5 : mode === "NEAREST_10" ? 10 : 1;
+  return money(Math.ceil(value / increment) * increment);
+}
+
 export function calculateProposedPrice(input: SupplierPricingInput, settings: PricingSettings): SupplierPricingResult {
   const warnings: PricingWarning[] = [];
   const costExVat = input.landedCostExVat ?? input.supplierCostExVat;
   if (input.currency !== "ZAR" && !input.fxRateUsed) warnings.push("MISSING_FX_RATE");
-  if (input.fxRateUsed && Date.now() - new Date(input.pricingTimestamp).getTime() > settings.fxStaleAfterHours * 3_600_000) warnings.push("STALE_FX_RATE");
+  if (input.fxRateUsed && Date.now() - new Date(input.fxCapturedAt ?? input.pricingTimestamp).getTime() > settings.fxStaleAfterHours * 3_600_000) warnings.push("STALE_FX_RATE");
   if (costExVat === undefined || !Number.isFinite(costExVat) || costExVat < 0) {
     const resultWarnings = [...warnings, "NO_VALID_PRICING_BAND"] as PricingWarning[];
     return { vatRatePercent: settings.vatRatePercent, referenceRetailInclVat: input.referenceRetailInclVat, warnings: resultWarnings, warningDetails: resultWarnings.map((code) => classifyPricingWarning(code, { referencePriceBehavior: settings.referencePriceBehavior })) };
@@ -42,7 +51,12 @@ export function calculateProposedPrice(input: SupplierPricingInput, settings: Pr
   const profitFloorPrice = costExVat + (band.minimumGrossProfit ?? 0);
   const sellingExVatBeforeRounding = Math.max(marginPrice, profitFloorPrice);
   const vatRate = settings.vatRatePercent / 100;
-  const roundedInclVat = applyPricingRounding(sellingExVatBeforeRounding * (1 + vatRate), settings.roundingMode);
+  const unroundedInclVat = sellingExVatBeforeRounding * (1 + vatRate);
+  const roundedCandidate = applyPricingRounding(unroundedInclVat, settings.roundingMode);
+  const roundedCandidateScenario = priceScenario(roundedCandidate, costExVat, vatRate, band.targetGrossMarginPercent, band.minimumGrossProfit);
+  const roundedInclVat = roundedCandidateScenario.minimumProfitPasses && roundedCandidateScenario.targetMarginPasses
+    ? roundedCandidate
+    : applyPricingRoundingAtOrAbove(unroundedInclVat, settings.roundingMode);
   const targetMarginProposal = priceScenario(roundedInclVat, costExVat, vatRate, band.targetGrossMarginPercent, band.minimumGrossProfit);
   let proposedInclVat = roundedInclVat;
   if (settings.referencePriceBehavior === "SOFT_CEILING" && input.referenceRetailInclVat !== undefined && proposedInclVat > input.referenceRetailInclVat) proposedInclVat = input.referenceRetailInclVat;
@@ -66,11 +80,24 @@ export function scoopPricingInput(input: { supplierOfferId: string; dealerPriceE
   return { supplierId: "SCOOP", supplierOfferId: input.supplierOfferId, currency: "ZAR", supplierCostExVat: input.dealerPriceExVat, referenceRetailInclVat: input.referenceRetailInclVat, pricingTimestamp: input.pricingTimestamp };
 }
 
-export function cjLandedCostPricingInput(input: { supplierOfferId: string; currency: string; productCost: number; shippingCost: number; fxRate?: number; fxBufferPercent: number; pricingTimestamp: string }): SupplierPricingInput {
-  const sourceTotal = money(input.productCost + input.shippingCost);
-  if (input.currency === "ZAR") return { supplierId: "CJ", supplierOfferId: input.supplierOfferId, currency: "ZAR", landedCostExVat: sourceTotal, shippingCost: input.shippingCost, pricingTimestamp: input.pricingTimestamp };
-  const landedCostExVat = input.fxRate === undefined ? undefined : money(sourceTotal * input.fxRate * (1 + input.fxBufferPercent / 100));
-  return { supplierId: "CJ", supplierOfferId: input.supplierOfferId, currency: input.currency, landedCostExVat, shippingCost: input.shippingCost, fxRateUsed: input.fxRate, fxBufferPercent: input.fxBufferPercent, pricingTimestamp: input.pricingTimestamp };
+export function syntechPricingInput(input: { supplierOfferId: string; effectiveDealerCostExVat: number; referenceRetailInclVat?: number; pricingTimestamp: string }): SupplierPricingInput {
+  return { supplierId: "SYNTECH", supplierOfferId: input.supplierOfferId, currency: "ZAR", supplierCostExVat: input.effectiveDealerCostExVat, referenceRetailInclVat: input.referenceRetailInclVat, pricingTimestamp: input.pricingTimestamp };
+}
+
+export function tekCentralManualPricingInput(input: { supplierOfferId: string; sourceCostExVat: number; pricingTimestamp: string }): SupplierPricingInput {
+  return { supplierId: "TEKCENTRAL", supplierOfferId: input.supplierOfferId, currency: "ZAR", supplierCostExVat: input.sourceCostExVat, pricingTimestamp: input.pricingTimestamp };
+}
+
+export function tvrPricingInput(input: { supplierOfferId: string; sourceCost: number; taxBasis: "EXCLUSIVE" | "INCLUSIVE"; vatRatePercent: number; pricingTimestamp: string; sourcePriceField?: string }): SupplierPricingInput {
+  const supplierCostExVat = input.taxBasis === "EXCLUSIVE" ? money(input.sourceCost) : money(input.sourceCost / (1 + input.vatRatePercent / 100));
+  return { supplierId: "TVR", supplierOfferId: input.supplierOfferId, currency: "ZAR", supplierCostExVat, supplierCostInclVat: input.taxBasis === "INCLUSIVE" ? money(input.sourceCost) : undefined, sourceCostAmount: money(input.sourceCost), sourceCurrency: "ZAR", sourceTaxBasis: input.taxBasis, sourcePriceField: input.sourcePriceField, pricingTimestamp: input.pricingTimestamp };
+}
+
+export function cjLandedCostPricingInput(input: { supplierOfferId: string; currency: string; productCost: number; shippingCost: number; fxRate?: number; fxBufferPercent: number; pricingTimestamp: string; includeShippingInCost?: boolean; fxCapturedAt?: string; fxProvider?: string; fxSourceReference?: string }): SupplierPricingInput {
+  const sourceCost = money(input.productCost + (input.includeShippingInCost === false ? 0 : input.shippingCost));
+  if (input.currency === "ZAR") return { supplierId: "CJ", supplierOfferId: input.supplierOfferId, currency: "ZAR", landedCostExVat: sourceCost, shippingCost: input.shippingCost, sourceCostAmount: input.productCost, sourceCurrency: input.currency, pricingTimestamp: input.pricingTimestamp };
+  const landedCostExVat = input.fxRate === undefined ? undefined : money(sourceCost * input.fxRate * (1 + input.fxBufferPercent / 100));
+  return { supplierId: "CJ", supplierOfferId: input.supplierOfferId, currency: input.currency, landedCostExVat, shippingCost: input.shippingCost, sourceCostAmount: input.productCost, sourceCurrency: input.currency, fxRateUsed: input.fxRate, fxBufferPercent: input.fxBufferPercent, fxCapturedAt: input.fxCapturedAt, fxProvider: input.fxProvider, fxSourceReference: input.fxSourceReference, pricingTimestamp: input.pricingTimestamp };
 }
 
 export function prepareSupplierPricing(input: {
@@ -135,6 +162,8 @@ export interface SupplierPricingInput {
   landedCostExVat?: number; landedCostInclVat?: number;
   referenceRetailInclVat?: number; shippingCost?: number;
   fxRateUsed?: number; fxBufferPercent?: number; pricingTimestamp: string;
+  sourceCostAmount?: number; sourceCurrency?: string; fxCapturedAt?: string; fxProvider?: string; fxSourceReference?: string;
+  sourceTaxBasis?: "EXCLUSIVE" | "INCLUSIVE"; sourcePriceField?: string;
 }
 export interface SupplierPricingResult {
   appliedPricingBand?: PricingBand; vatRatePercent: number;
@@ -164,7 +193,7 @@ export function calculateManualPriceOverride(input: SupplierPricingInput, settin
   const minimumGrossProfit = band.minimumGrossProfit ?? 0;
   const warnings: PricingWarning[] = [];
   if (input.currency !== "ZAR" && !input.fxRateUsed) warnings.push("MISSING_FX_RATE");
-  if (input.fxRateUsed && Date.now() - new Date(input.pricingTimestamp).getTime() > settings.fxStaleAfterHours * 3_600_000) warnings.push("STALE_FX_RATE");
+  if (input.fxRateUsed && Date.now() - new Date(input.fxCapturedAt ?? input.pricingTimestamp).getTime() > settings.fxStaleAfterHours * 3_600_000) warnings.push("STALE_FX_RATE");
   if (grossProfit < 0) warnings.push("SELLING_BELOW_COST");
   if (grossProfit < minimumGrossProfit) warnings.push("BELOW_MINIMUM_PROFIT");
   if (grossMarginPercent < band.targetGrossMarginPercent - TARGET_MARGIN_TOLERANCE_PERCENTAGE_POINTS) warnings.push("BELOW_TARGET_MARGIN");

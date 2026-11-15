@@ -13,11 +13,14 @@ import { formatDateTime } from "@/lib/order-utils";
 import { usePageTitle } from "@/lib/page-title";
 import type { AdminOrderResponse, AdminReturnRow } from "@/lib/admin";
 import type { ReturnStatus } from "@/types/order";
+import { ReturnsRefundsNav } from "@/components/admin/ReturnsRefundsNav";
+import { AdminIdentityCell, AdminTable, AdminTableActions, AdminTableBody, AdminTableCell, AdminTableContainer, AdminTableHead, AdminTableHeader, AdminTableRow, AdminTableState } from "@/components/admin/AdminTable";
 
 export function AdminReturnsPage() {
   usePageTitle("Admin returns | TekCentral");
   const [rows, setRows] = useState<AdminReturnRow[]>([]);
   const [feedback, setFeedback] = useState<{ variant: "success" | "error"; message: string }>();
+  const [inventoryBusy, setInventoryBusy] = useState(false);
 
   const loadRows = () => {
     apiRequest<{ returns: AdminReturnRow[] }>("/api/admin/returns")
@@ -40,6 +43,15 @@ export function AdminReturnsPage() {
     }
   };
 
+  const inventoryAction = async (returnId: string, action: "receive" | "inspect" | "decide", body: Record<string, unknown>) => {
+    if (inventoryBusy) return;
+    setInventoryBusy(true);
+    try {
+      await apiRequest(`/api/admin/returns/${encodeURIComponent(returnId)}/inventory/${action}`, { method: "POST", body: JSON.stringify(body) });
+      setFeedback({ variant: "success", message: action === "receive" ? "Physical return received. Sellable stock is unchanged pending inspection." : action === "inspect" ? "Inspection started." : "Inventory decision recorded." }); loadRows();
+    } catch (error) { setFeedback({ variant: "error", message: error instanceof Error ? error.message : "Inventory action failed." }); } finally { setInventoryBusy(false); }
+  };
+
   return (
     <AdminShell>
       <AdminPageHeader
@@ -47,59 +59,12 @@ export function AdminReturnsPage() {
         title="Return management"
         description="Review customer return requests, selected items, reasons and operational state."
       />
+      <ReturnsRefundsNav />
       {feedback && <div className="mt-5"><AdminFeedback {...feedback} /></div>}
-      <section className="mt-6 space-y-4">
-        {rows.map(({ order, returnRequest }) => (
-          <article key={returnRequest.id} className="rounded-lg border border-[#E4E7EC] bg-white p-5 shadow-sm">
-            <div className="grid gap-4 lg:grid-cols-[1fr_1fr_180px] lg:items-start">
-              <div>
-                <p className="text-sm font-black">{returnRequest.id}</p>
-                <Link to={`/admin/orders/${order.orderNumber}`} className="mt-1 block text-sm font-black text-[var(--tek-accent)]">
-                  {order.orderNumber}
-                </Link>
-                <p className="mt-2 text-sm font-semibold text-[#3F4652]">
-                  {order.customer.firstName} {order.customer.lastName} | {order.customer.email}
-                </p>
-                <p className="mt-2 text-xs font-semibold text-[#727986]">
-                  {formatDateTime(returnRequest.createdAt)}
-                </p>
-              </div>
-              <div>
-                <p className="text-sm font-black">Customer request</p>
-                <p className="mt-1 text-sm leading-6 text-[#3F4652]">{returnRequest.reason}</p>
-                {returnRequest.notes && (
-                  <p className="mt-1 text-sm leading-6 text-[#727986]">{returnRequest.notes}</p>
-                )}
-                <ul className="mt-3 space-y-1 text-sm text-[#3F4652]">
-                  {returnRequest.items.map((item) => (
-                    <li key={item.productId}>{item.quantity} x {item.name}</li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <AdminStatusBadge label={returnRequest.status} />
-                <div className="mt-3 flex flex-col gap-2">
-                  {adminReturnActions.map((action) => (
-                    <button
-                      key={action.status}
-                      type="button"
-                      onClick={() => updateStatus(returnRequest.id, action.status)}
-                      className="rounded-md border border-[#E4E7EC] px-3 py-2 text-left text-xs font-black hover:border-[#0A0A0A]"
-                    >
-                      {action.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </article>
-        ))}
-        {rows.length === 0 && (
-          <p className="rounded-lg border border-[#E4E7EC] bg-white p-6 text-sm font-semibold text-[#727986]">
-            No return requests found.
-          </p>
-        )}
-      </section>
+      <AdminTableContainer label="Returns"><AdminTable minWidth={920}><AdminTableHead><AdminTableRow><AdminTableHeader>Return</AdminTableHeader><AdminTableHeader>Customer request</AdminTableHeader><AdminTableHeader>Items</AdminTableHeader><AdminTableHeader>Status</AdminTableHeader><AdminTableHeader align="right">Action</AdminTableHeader></AdminTableRow></AdminTableHead><AdminTableBody>
+        {rows.map(({ order, returnRequest, inventory }) => <AdminTableRow key={returnRequest.id}><AdminTableCell><AdminIdentityCell primary={<Link to={`/admin/orders/${order.orderNumber}`} className="hover:text-[#176B5C]">{returnRequest.id}</Link>} secondary={`${order.orderNumber} · ${formatDateTime(returnRequest.createdAt)}`} tertiary={`${order.customer.firstName} ${order.customer.lastName}`} /></AdminTableCell><AdminTableCell><strong>{returnRequest.reason}</strong>{returnRequest.notes && <span className="block text-xs text-[#667085]">{returnRequest.notes}</span>}</AdminTableCell><AdminTableCell>{returnRequest.items.map((item) => { const stock = inventory?.items.find((entry) => entry.productId === item.productId); const received = stock?.reconciliations.reduce((sum, entry) => sum + entry.quantity, 0) ?? 0; const reconciled = stock?.reconciliations.filter((entry) => entry.inspectionState === "RECONCILED").reduce((sum, entry) => sum + entry.quantity, 0) ?? 0; return <div key={item.productId} className="mb-3 last:mb-0"><strong className="block">{item.quantity} x {item.name}</strong>{stock?.eligible && <div className="mt-2 rounded-md border border-[#D0D5DD] bg-[#F9FAFB] p-2 text-xs"><p>{stock.supplierSku} · Fulfilled {stock.fulfilledQuantity} · Received {received} · Reconciled {reconciled}</p>{stock.offer && <p className="text-[#667085]">On hand {stock.offer.onHand} · Reserved {stock.offer.reserved} · Available {stock.offer.available}</p>}<div className="mt-2 flex flex-wrap gap-2">{received < item.quantity && ["APPROVED", "AWAITING_RETURN", "RECEIVED"].includes(returnRequest.status) && <button disabled={inventoryBusy} className="rounded bg-[#176B5C] px-2 py-1 font-bold text-white" onClick={() => inventoryAction(returnRequest.id, "receive", { productId: item.productId, quantity: item.quantity - received })}>Receive Return</button>}{stock.reconciliations.map((entry) => entry.inspectionState === "RECEIVED" ? <button disabled={inventoryBusy} key={entry.id} className="rounded border px-2 py-1 font-bold" onClick={() => inventoryAction(returnRequest.id, "inspect", { productId: item.productId, reconciliationId: entry.id })}>Start Inspection</button> : entry.inspectionState !== "RECONCILED" ? <span key={entry.id} className="flex flex-wrap gap-1"><button disabled={inventoryBusy} className="rounded border px-2 py-1 font-bold disabled:opacity-50" onClick={() => window.confirm(`Restock ${entry.quantity} x ${item.name} as sellable?`) && inventoryAction(returnRequest.id, "decide", { productId: item.productId, reconciliationId: entry.id, decision: "RESTOCK_SELLABLE" })}>Restock Sellable</button><button disabled={inventoryBusy} className="rounded border px-2 py-1 font-bold disabled:opacity-50" onClick={() => window.confirm(`Write off ${entry.quantity} x ${item.name} as damaged? Stock will not increase.`) && inventoryAction(returnRequest.id, "decide", { productId: item.productId, reconciliationId: entry.id, decision: "DAMAGED_WRITE_OFF" })}>Write Off Damaged</button><button disabled={inventoryBusy} className="rounded border px-2 py-1 font-bold disabled:opacity-50" onClick={() => window.confirm(`Write off ${entry.quantity} x ${item.name} as non-sellable? Stock will not increase.`) && inventoryAction(returnRequest.id, "decide", { productId: item.productId, reconciliationId: entry.id, decision: "NON_SELLABLE_WRITE_OFF" })}>Write Off Non-Sellable</button></span> : <span key={entry.id} className="font-bold text-[#176B5C]">{entry.decision?.replace(/_/g, " ")}</span>)}</div></div>}</div>; })}</AdminTableCell><AdminTableCell><AdminStatusBadge label={returnRequest.status} status={returnRequest.status} /></AdminTableCell><AdminTableCell align="right"><AdminTableActions primary={<Link to={`/admin/orders/${order.orderNumber}`} className="rounded-md border border-[#D0D5DD] px-3 py-2 text-xs font-black">View</Link>}>{adminReturnActions.map((action) => <button key={action.status} type="button" onClick={() => updateStatus(returnRequest.id, action.status)}>{action.label}</button>)}</AdminTableActions></AdminTableCell></AdminTableRow>)}
+        {rows.length === 0 && <AdminTableState colSpan={5} kind="empty" title="No return requests found." />}
+      </AdminTableBody></AdminTable></AdminTableContainer>
     </AdminShell>
   );
 }

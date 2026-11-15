@@ -16,6 +16,35 @@ export interface AdminOrderResponse {
   order: Order;
   activity: AdminActivityEntry[];
   attentionReasons: AttentionReason[];
+  commercialDocuments?: {
+    invoice?: {
+      invoiceNumber: string;
+      status: string;
+      issuedAt: string;
+      total: number;
+      currency: Order["currency"];
+      documentStatus: "READY" | "MISSING" | "FAILED";
+      documentFailureCode?: string;
+      downloadAvailable: boolean;
+      deliveries: {
+        deliveryId: string;
+        status: "PENDING" | "SENDING" | "SENT" | "FAILED";
+        recipient: string;
+        attempts: number;
+        lastDeliveryAt?: string;
+        safeFailureCode?: string;
+        originType: "SYSTEM" | "STAFF_USER";
+        actorLabel?: string;
+        createdAt: string;
+        history: {
+          attemptNumber: number;
+          outcome: "SENT" | "FAILED";
+          completedAt: string;
+          safeFailureCode?: string;
+        }[];
+      }[];
+    };
+  };
 }
 
 export interface AdminOrdersResponse {
@@ -36,9 +65,12 @@ export interface AdminSupplierOrdersResponse {
 
 export interface AdminSupplierOrderResponse {
   supplierOrder: SupplierOrder;
+  tekcentralStock?: { offerId: string; supplierSku: string; onHand: number; reserved: number; available: number; sourceCostExVat: number; stockObservedAt: string; costObservedAt: string; active: boolean }[];
   supplierConfiguration?: {
     manualProcurementUrl?: string;
     operationalChannel?: string;
+    capabilities?: { realOrderSubmit?: boolean };
+    apiProcurement?: { effectiveEnabled: boolean; operational: { enabled: boolean }; deployment: { enabled: boolean; environment: string } };
   };
   operationsNotification?: {
     notificationId: string;
@@ -141,6 +173,24 @@ export interface CjOrderPreflight {
   requestFingerprint?: string;
 }
 
+export interface SyntechOrderPreflight {
+  supplierOrderId: string;
+  status: "BLOCKED" | "READY_FOR_CONTROLLED_UAT";
+  checkedAt: string;
+  environment: "UAT";
+  featureEnabled: boolean;
+  configurationReady: boolean;
+  externalReference: string;
+  shipping: { type: "DELIVERY" } | { type: "COLLECTION"; location: "cpt" | "jhb" };
+  backorder: "no";
+  lines: { productId: string; description: string; supplierSku: string; quantity: number; unitCostZar: number; branchStock: { CPT?: number; JHB?: number; DBN?: number }; totalStock?: number; promotionActive: boolean; promotionChanged: boolean; observedAt: string }[];
+  estimatedProductCostZar: number;
+  warnings: string[];
+  blockers: string[];
+  submissionBlockers: string[];
+  maintenanceWindow: boolean;
+}
+
 export interface CjVariantDeliveryCheck {
   supplierVariantId: string;
   destinationCountryCode: "ZA";
@@ -152,8 +202,12 @@ export interface CjVariantDeliveryCheck {
     | "STOCK_UNAVAILABLE"
     | "DATA_INCOMPLETE"
     | "VARIANT_INVALID"
+    | "RATE_LIMITED"
+    | "TEMPORARY_ERROR"
     | "API_REJECTED";
   checkedAt: string;
+  cached?: boolean;
+  retryAfterSeconds?: number;
   message: string;
   sourceCountries: string[];
   diagnosticReasons?: string[];
@@ -181,6 +235,46 @@ export interface CjConnectionStatus {
   verifiedMappingsCount: number;
   suggestedMappingsCount: number;
   staleMappingsCount: number;
+}
+
+export interface CanonicalAvailabilitySummary {
+  state: string;
+  freshness: string;
+  quantity?: number;
+  reason?: string;
+}
+
+export interface CjLaunchReadinessRow {
+  product: SupplierCatalogueProduct;
+  variant: SupplierCatalogueProduct["variants"][number];
+  mapping?: SupplierProductMapping;
+  canonicalProduct?: { id: string; name: string; sku: string };
+  onboarding?: import("@/lib/product-onboarding").ProductOnboardingReadiness;
+  canonicalAvailability?: CanonicalAvailabilitySummary;
+  readiness: { status: "NOT_READY" | "READY_FOR_PUBLISH_REVIEW"; blockers: string[]; nextAction: string };
+  evidence: {
+    status: "BLOCKED" | "READY_FOR_PRICING";
+    identityStatus: "IDENTITY_VERIFIED" | "IDENTITY_REVIEW_REQUIRED";
+    variantStatus: "VARIANT_VERIFIED" | "VARIANT_REVIEW_REQUIRED" | "VARIANT_AMBIGUOUS";
+    currency: string | null;
+    currencySource: "API_FIELD" | "CJ_API_CONTRACT" | "ACCOUNT_CONFIGURATION" | "CJ_DOCUMENTED_DEFAULT" | "ADMIN_CONFIRMED" | "UNKNOWN";
+    costStatus: "AUTHORITATIVE" | "MISSING";
+    authoritativeCost?: number;
+    costSourceField?: string;
+    normalizedCostZar?: number;
+    fxStatus: "NOT_EVALUATED" | "NOT_REQUIRED" | "CONFIGURED" | "REQUIRED" | "STALE";
+    logistics: { status: "COMPLETE" | "PARTIAL" | "MISSING"; weightGrams?: number; lengthMm?: number; widthMm?: number; heightMm?: number };
+    blockers: string[];
+    nextAction: string;
+    demoProductWarning: boolean;
+  };
+  proposal?: PricingProposal;
+  publication: { state: "NOT_PUBLISHED" | "READY_FOR_PUBLISH_REVIEW" | "PUBLISHED" | "UNPUBLISHED"; versionCount: number; slug?: string };
+}
+
+export interface CjLaunchReadinessResponse {
+  rows: CjLaunchReadinessRow[];
+  metrics: { importedProducts: number; importedOffers: number; candidates: number; selected: number; verified: number; logisticsComplete: number; pricingPending: number; pricingApproved: number; readyForPublishReview: number; published: number };
 }
 
 export interface CjProductSearchResponse {
@@ -258,7 +352,7 @@ export interface ScoopCatalogueProduct {
   lastSyncedAt: string;
   staleAt?: string;
   pricing: SupplierPricingPreparation;
-  productPageResolution?: { status: "RESOLVED" | "NOT_FOUND" | "AMBIGUOUS" | "ERROR"; productPageUrl?: string; resolvedAt: string; error?: string };
+  productPageResolution?: { status: "RESOLVED" | "NOT_FOUND" | "AMBIGUOUS" | "ERROR"; productPageUrl?: string; resolvedAt: string; error?: string; urlStatus?: "VERIFIED" | "REVIEW_REQUIRED" | "UNKNOWN" | "CONFLICT"; urlSource?: "PREVIOUSLY_VERIFIED" | "WEBSITE_OBSERVATION" | "TRUSTED_IMPORT" | "STAFF_PROVIDED" | "SAFE_DISCOVERY"; urlIdentityConfidence?: "HIGH" | "MEDIUM" | "LOW"; verifiedAt?: string; lastCheckedAt?: string; history?: { url: string; source: string; status: string; observedAt: string }[] };
   logisticsMetadata?: {
     status: "COMPLETE" | "WEIGHT_ONLY" | "DIMENSIONS_ONLY" | "MISSING" | "INVALID";
     source: "SUPPLIER_FEED" | "SUPPLIER_PRODUCT_PAGE" | "MANUFACTURER" | "ADMIN_IMPORT" | "ADMIN" | "UNKNOWN"; sourceReference?: string; capturedAt: string; updatedAt: string; fetchedAt: string; productPageUrl?: string;
@@ -266,12 +360,15 @@ export interface ScoopCatalogueProduct {
     packageWeightGrams?: number; packageLengthMm?: number; packageWidthMm?: number; packageHeightMm?: number;
     manufacturer?: string; model?: string; supplierSku?: string;
     identityConfidence?: "HIGH" | "MEDIUM" | "LOW"; sourceConfidence?: "HIGH" | "MEDIUM" | "LOW";
-    shippingBasis?: "PACKAGE" | "PRODUCT_DIMENSIONS_FALLBACK"; notes?: string;
+    shippingBasis?: "PACKAGE" | "PRODUCT_DIMENSIONS_FALLBACK"; measurementScope?: "PRODUCT" | "PACKAGE" | "PRODUCT_AND_PACKAGE"; productSource?: "SUPPLIER_FEED" | "SUPPLIER_PRODUCT_PAGE" | "MANUFACTURER" | "ADMIN_IMPORT" | "ADMIN" | "UNKNOWN"; packageSource?: "SUPPLIER_FEED" | "SUPPLIER_PRODUCT_PAGE" | "MANUFACTURER" | "ADMIN_IMPORT" | "ADMIN" | "UNKNOWN"; extractionConfidence?: "HIGH" | "MEDIUM" | "LOW"; components?: { label: string; weightGrams?: number; lengthMm?: number; widthMm?: number; heightMm?: number; rawWeight?: string; rawDimensions?: string }[]; notes?: string;
     actualWeightKg?: number; volumeM3?: number; rawWeight?: string; rawDimensions?: string;
   };
+  logisticsSources?: ScoopCatalogueProduct["logisticsMetadata"][];
   logisticsLastAttemptAt?: string;
   logisticsLastError?: string;
   logisticsLastFailure?: string;
+  confirmedHardwareRevision?: { revision: string; sourceReference: string; contentFingerprint: string; confirmedAt: string; confirmedBy: string };
+  capturedContentSuggestions?: { contentFingerprint: string; sourceUrl: string; capturedAt: string; specifications: unknown[]; documents: unknown[] };
   launchAssortment?: {
     state: "NOT_SELECTED" | "CANDIDATE" | "SELECTED_FOR_LAUNCH";
     suggested: boolean;
@@ -287,16 +384,25 @@ export interface ScoopLaunchReadinessRow {
   proposal?: PricingProposal;
   readiness: {
     status: "NOT_READY" | "READY_FOR_PUBLISH_REVIEW";
-    blockers: ("NOT_SELECTED" | "OFFER_UNAVAILABLE" | "AUTHORITATIVE_COMMERCIAL_DATA_MISSING" | "MAPPING_NOT_VERIFIED" | "LOGISTICS_INCOMPLETE" | "PRICING_MISSING" | "PRICING_NOT_APPROVED" | "PRICING_BLOCKING_WARNING")[];
+    blockers: ("NOT_SELECTED" | "OFFER_UNAVAILABLE" | "AUTHORITATIVE_COMMERCIAL_DATA_MISSING" | "MAPPING_NOT_VERIFIED" | "LOGISTICS_INCOMPLETE" | "PRICING_MISSING" | "PRICING_NOT_APPROVED" | "PRICING_STALE" | "PRICING_BLOCKING_WARNING")[];
     nextAction: string;
   };
-  publication: { state: "NOT_PUBLISHED" | "READY_FOR_PUBLISH_REVIEW" | "PUBLISHED" | "UNPUBLISHED"; activeVersionId?: string; versionCount: number; slug?: string };
+  publication: { state: "NOT_PUBLISHED" | "READY_FOR_PUBLISH_REVIEW" | "PUBLISHED" | "UNPUBLISHED"; activeVersionId?: string; versionCount: number; slug?: string; activePrice?: number; hasUnpublishedChanges?: boolean };
+  publicationAction: { primary: string; secondary?: string };
+  publicationEligibility?: { canPublish: boolean; blockers: string[]; warnings: string[] };
+  onboarding?: import("@/lib/product-onboarding").ProductOnboardingReadiness;
+  canonicalAvailability?: CanonicalAvailabilitySummary;
+  workflow: { stage: "UNMAPPED" | "MAPPING_REVIEW" | "LOGISTICS_REQUIRED" | "PRICING_REQUIRED" | "READY_FOR_LAUNCH_SELECTION" | "SELECTED_NOT_READY" | "READY_FOR_PUBLISH_REVIEW" | "PUBLISHED_CLEAN" | "PUBLISHED_CHANGES_PENDING" | "UNPUBLISHED_WITH_HISTORY"; primaryAction: string; completionState: "READY_FOR_PUBLISH_REVIEW" | "PUBLISHED" | "BLOCKED_LOGISTICS" | "BLOCKED_URL_IDENTITY" | "BLOCKED_PRICING" | "BLOCKED_MAPPING" | "DELIBERATELY_EXCLUDED" | "NEEDS_STAFF_REVIEW"; exactBlockers: string[]; completedLaunchChecks: number; totalLaunchChecks: 5; steps: { id: "MAPPING" | "LOGISTICS" | "PRICING" | "LAUNCH_SELECTION" | "PUBLICATION"; label: string; status: string; complete: boolean }[] };
 }
 
 export interface ScoopLaunchReadinessResponse {
   rows: ScoopLaunchReadinessRow[];
-  metrics: { totalOffers: number; launchCandidates: number; selectedForLaunch: number; verifiedMappings: number; logisticsComplete: number; approvedPricing: number; readyForPublishReview: number };
+  workflowRows: ScoopLaunchReadinessRow[];
+  guidanceRows: ScoopLaunchReadinessRow[];
+  metrics: { totalOffers: number; launchCandidates: number; selectedForLaunch: number; verifiedMappings: number; logisticsComplete: number; approvedPricing: number; readyForPublishReview: number; published: number; blockedLogistics: number; blockedPricing: number; blockedMapping: number; needsStaffReview: number };
 }
+
+export type PricingPresentation = { state: "NEEDS_APPROVAL" | "APPROVED_NOT_PUBLISHED" | "LIVE" | "LIVE_PRICE_CHANGE_PENDING" | "HISTORY"; livePrice?: number; approvedNextPrice?: number; slug?: string };
 
 export interface SupplierPricingPreparation {
   currency: string;
@@ -316,7 +422,13 @@ export interface SupplierPricingPreparation {
 export type PricingRoundingMode = "NONE" | "NEAREST_1" | "NEAREST_5" | "NEAREST_10" | "END_99";
 export type ReferencePriceBehavior = "IGNORE" | "WARNING_ONLY" | "SOFT_CEILING";
 export interface PricingBand { id: string; minimumCost: number; maximumCost?: number; targetGrossMarginPercent: number; minimumGrossProfit?: number; }
-export interface PricingSettings { vatRatePercent: number; pricingBands: PricingBand[]; roundingMode: PricingRoundingMode; referencePriceBehavior: ReferencePriceBehavior; proposedPricesRequireApproval: boolean; autoPublishPrices: boolean; cjManualFxRate?: number; cjFxRateUpdatedAt?: string; cjFxBufferPercent: number; fxStaleAfterHours: number; }
+export interface PricingSettings { vatRatePercent: number; pricingBands: PricingBand[]; roundingMode: PricingRoundingMode; referencePriceBehavior: ReferencePriceBehavior; proposedPricesRequireApproval: boolean; autoPublishPrices: boolean; cjManualFxRate?: number; cjFxRateUpdatedAt?: string; cjFxSourceCurrency?: string; cjFxSourceReference?: string; cjFxManualReason?: string; cjFxManualActor?: string; cjFxBufferPercent: number; fxStaleAfterHours: number; fxImpactMonitoringEnabled: boolean; fxImpactMonitoringMode: "MANUAL" | "ASSISTED" | "AUTO_WITH_GUARDRAILS"; fxImpactThresholds: { ignorePercent: number; monitorPercent: number; reviewPercent: number; criticalPercent: number }; fxScheduledReconciliationEnabled: boolean; fxScheduledReconciliationHours: number; }
+export interface FxQuote { sourceCurrency: string; targetCurrency: string; rate: number; provider: string; effectiveAt: string; fetchedAt: string; sourceReference: string; }
+export interface FxRateResponse { quote?: FxQuote; status: "FRESH" | "STALE" | "MISSING"; freshnessHours: number; reconciliation?: { evaluated: number; generated: number; blocked: number; notifications?: number }; }
+export interface FxPricingImpact { id: string; productId: string; productName: string; category?: string; supplierId: string; supplierOfferId: string; sourceCurrency: string; targetCurrency: "ZAR"; sourceCostAmount: number; previousFxRate: number; currentFxRate: number; previousNormalizedCost: number; currentNormalizedCost: number; costDelta: number; costDeltaPercent: number; direction: "INCREASE" | "DECREASE" | "UNCHANGED"; commercialBaseline: "LIVE" | "APPROVED" | "PENDING" | "NONE"; currentRetailPrice?: number; previousGrossMarginPercent?: number; currentGrossMarginPercent?: number; marginPointChange?: number; currentGrossProfit?: number; recommendedPrice?: number; classification: "IGNORE" | "MONITOR" | "REVIEW" | "CRITICAL"; reasons: string[]; evaluatedAt: string; resultingAction: string; proposalId?: string; notificationRequired: boolean; }
+export interface FxImpactDashboard { impacts: FxPricingImpact[]; metrics: { healthy: number; monitor: number; review: number; critical: number; pendingProposals: number; notifications: number }; }
+export interface FxReconciliationRun { id: string; trigger: "SCHEDULED" | "MANUAL"; startedAt: string; completedAt: string; status: "SUCCESS" | "PARTIAL" | "FAILED" | "SKIPPED"; pairsEvaluated: number; ratesRefreshed: number; ratesReused: number; offersEvaluated: number; ignore: number; monitor: number; review: number; critical: number; proposalsGenerated: number; attentionCreated: number; errors: { pair?: string; message: string }[]; }
+export interface FxPricingAttention { count: number; productIds: string[]; lastRun?: FxReconciliationRun; running: boolean; }
 export interface SettingsAuditEntry { id: string; setting: string; previousValue: unknown; newValue: unknown; timestamp: string; actor: string; }
 export interface ShippingSettings {
   shippingEnabled: boolean; quoteValidityMinutes: number; shippingPriceBufferPercent: number;
@@ -362,7 +474,7 @@ export function normalizeAdminShippingSettings(input: Partial<ShippingSettings>)
 }
 export interface PricingScenario { suggestedPriceInclVat: number; suggestedPriceExVat: number; grossProfitExVat: number; grossMarginPercent: number; markupPercent: number; minimumProfitPasses: boolean; targetMarginPasses: boolean; referenceRetailDelta: number; }
 export interface ManualPricingPreview { proposedSellingPriceInclVat: number; proposedSellingPriceExVat: number; vatAmount: number; supplierCostExVat: number; grossProfit: number; grossMarginPercent: number; markupPercent: number; targetMarginPercent: number; minimumGrossProfit: number; minimumProfitPasses: boolean; targetMarginPasses: boolean; referenceRetailInclVat?: number; referenceRetailDelta?: number; automatedTargetDelta: number; warnings: string[]; warningDetails: { code: string; severity: "INFO" | "WARNING" | "BLOCKING"; message: string }[]; }
-export interface PricingProposal { id: string; productId: string; supplierId: string; supplierOfferId: string; proposalKind?: "AUTOMATED" | "MANUAL_OVERRIDE"; status: "DRAFT" | "PENDING_APPROVAL" | "APPROVED" | "REJECTED" | "SUPERSEDED"; proposedSellingPriceExVat?: number; vatAmount?: number; proposedSellingPriceInclVat?: number; grossProfit?: number; grossMarginPercent?: number; markupPercent?: number; referenceRetailInclVat?: number; appliedPricingBand?: PricingBand; warnings: string[]; warningDetails?: { code: string; severity: "INFO" | "WARNING" | "BLOCKING"; message: string }[]; targetMarginProposal?: PricingScenario; competitiveSuggestion?: PricingScenario & { viability: "VIABLE_BELOW_TARGET_MARGIN" | "NOT_COMMERCIALLY_VIABLE" }; manualOverride?: { override: true; priceInclVat: number; reason: string; reasonCategory?: string; actor: string; timestamp: string; originalProposalId: string; grossProfitExVat: number; grossMarginPercent: number; markupPercent: number }; supersededByProposalId?: string; supersededAt?: string; generatedAt: string; }
+export interface PricingProposal { id: string; productId: string; supplierId: string; supplierOfferId: string; proposalKind?: "AUTOMATED" | "MANUAL_OVERRIDE"; status: "DRAFT" | "PENDING_APPROVAL" | "APPROVED" | "REJECTED" | "SUPERSEDED"; costSnapshot: { currency: string; supplierCostExVat?: number; landedCostExVat?: number; sourceCostAmount?: number; sourceCurrency?: string; fxRateUsed?: number; fxProvider?: string }; proposedSellingPriceExVat?: number; vatAmount?: number; proposedSellingPriceInclVat?: number; grossProfit?: number; grossMarginPercent?: number; markupPercent?: number; referenceRetailInclVat?: number; appliedPricingBand?: PricingBand; vatRatePercent: number; warnings: string[]; warningDetails?: { code: string; severity: "INFO" | "WARNING" | "BLOCKING"; message: string }[]; targetMarginProposal?: PricingScenario; competitiveSuggestion?: PricingScenario & { viability: "VIABLE_BELOW_TARGET_MARGIN" | "NOT_COMMERCIALLY_VIABLE" }; manualOverride?: { override: true; priceInclVat: number; reason: string; reasonCategory?: string; actor: string; timestamp: string; originalProposalId: string; grossProfitExVat: number; grossMarginPercent: number; markupPercent: number }; approvedAt?: string; approvedBy?: string; rejectedAt?: string; rejectedBy?: string; supersededByProposalId?: string; supersededAt?: string; generatedAt: string; }
 
 export interface ScoopCatalogueSyncSummary {
   fetched: number;
@@ -386,21 +498,23 @@ export interface ScoopCatalogueStatus {
   reconciliation: { xmlBacked: number; websiteBacked: number; both: number; websiteOnly: number; xmlOnly: number; conflicts: number; stale: number };
   lastSync?: ScoopCatalogueSyncSummary;
   lastEnrichment?: ScoopLogisticsEnrichmentSummary;
-  logistics: { complete: number; partial: number; missing: number; adminOverrides: number; adminImports: number; supplierPage: number; supplierFeed: number; manufacturer: number; unknown: number };
+  canonicalUrls: { verified: number; reviewRequired: number; unknown: number; conflict: number; selectedVerified: number; selectedMissing: number };
+  logistics: { complete: number; partial: number; missing: number; adminOverrides: number; adminImports: number; supplierPage: number; scoopPageObservations: number; completeFromScoopPackage: number; completeFromScoopProductFallback: number; blocked: number; noMeasurements: number; selectedForLaunchComplete: number; supplierFeed: number; manufacturer: number; unknown: number };
 }
 export interface ScoopLogisticsEnrichmentSummary { requested: number; processed: number; complete: number; partial: number; missing: number; failed: number; cached: number; lastEnrichmentAt: string; bySource?: Record<string, number>; failureReasons?: Record<string, number>; manufacturerCoverage?: Record<string, { total: number; complete: number }>; }
 export interface ScoopProductCreationPreview {
   offer: ScoopCatalogueProduct;
   titleSuggestions: string[];
-  categorySuggestion: { slug: string; name: string; subcategories: string[] };
+  categorySuggestion: { slug: string; name: string; subcategories: string[]; suggestedSubcategory?: string; confidence: "HIGH" | "MEDIUM" | "LOW" | "NONE"; evidence: string[]; source: string };
   categories: { slug: string; name: string; subcategories: string[] }[];
   matches: { product: { id: string; name: string; sku?: string; brand: string; model?: string; category: string }; confidence: number; confidenceLevel: "HIGH" | "MEDIUM" | "LOW"; evidence: string[] }[];
 }
-export interface AdminInternalProduct { id: string; slug: string; sku: string; name: string; brand: string; category: string; categorySlug: string; subcategory?: string; shortDescription: string; images: string[]; publicationStatus: "INTERNAL_DRAFT"; provenance: { createdFromSupplierOffer: true; sourceSupplier: "SCOOP"; sourceSupplierOfferId: string; sourceSupplierSku: string; sourceDescription: string; manufacturer?: string; sourceImage?: { source: "SCOOP"; originalUrl: string; capturedAt: string } } }
+export interface AdminInternalProduct { id: string; slug: string; sku: string; name: string; brand: string; model?: string; category: string; categorySlug: string; subcategory?: string; categoryId?: string; subcategoryId?: string; productTypeId?: string; taxonomyVersion?: 1; taxonomyStatus?: "VERIFIED" | "REVIEW_REQUIRED" | "UNMAPPED"; taxonomyLabels?: { category?: string; subcategory?: string; productType?: string }; shortDescription: string; images: string[]; publicationStatus: "INTERNAL_DRAFT"; provenance: { createdFromSupplierOffer: true; sourceSupplier: "SCOOP" | "CJ" | "SYNTECH" | "TEKCENTRAL"; sourceSupplierOfferId: string; sourceSupplierSku: string; sourceDescription: string; sourceCategory?: { supplierId: string; sourceCategoryId?: string; sourceCategoryPath?: string; sourceCategoryLabel?: string }; manufacturer?: string; sourceImage?: { source: "SCOOP" | "CJ" | "SYNTECH" | "TEKCENTRAL"; originalUrl: string; capturedAt: string } } }
 
 export interface AdminReturnRow {
   order: Order;
   returnRequest: Order["returns"][number];
+  inventory?: { returnId: string; items: { productId: string; eligible: boolean; supplierOrderId?: string; manualOfferId?: string; supplierSku?: string; fulfilledQuantity?: number; requestedQuantity: number; reconciliations: NonNullable<Order["returns"][number]["items"][number]["inventoryReconciliations"]>; offer?: { onHand: number; reserved: number; available: number } }[] };
 }
 
 export interface AdminRefundRow {

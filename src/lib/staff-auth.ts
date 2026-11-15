@@ -1,0 +1,26 @@
+import { apiRequest } from "@/lib/api";
+
+export interface StaffSessionView { authenticated: boolean; staff?: { id: string; email: string; displayName: string; role: string; baseRole: string; status: string; mustChangePassword: boolean; twoFactorEnabled: boolean; twoFactorRequired: boolean; twoFactorReminderAt?: string; recoveryCodesRemaining: number }; effectivePermissions?: string[]; mustChangePassword?: boolean; }
+export interface StaffManagementView extends NonNullable<StaffSessionView["staff"]> { baseRole: string; grantedPermissions: string[]; revokedPermissions: string[]; effectivePermissions: string[]; createdAt: string; updatedAt: string; invitedAt?: string; inviteAcceptedAt?: string; lastLoginAt?: string; disabledAt?: string; }
+export interface StaffPermissionView { id: string; group: string; label: string; description: string; risk: "READ" | "STANDARD" | "SENSITIVE" | "HIGH_RISK"; operation: "READ" | "MUTATION"; }
+export interface StaffRoleView { id: string; label: string; permissions: string[]; }
+export const getStaffSession = () => apiRequest<StaffSessionView>("/api/admin/auth/session");
+export type StaffLoginResult = { staff: NonNullable<StaffSessionView["staff"]>; requiresTwoFactor: false } | { staff: NonNullable<StaffSessionView["staff"]>; requiresTwoFactor: true; challengeToken: string; expiresAt: string };
+export const loginStaff = (email: string, password: string) => apiRequest<StaffLoginResult>("/api/admin/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+export const verifyStaffTwoFactorLogin = (challengeToken: string, code: string, method: "TOTP_AUTHENTICATOR" | "RECOVERY_CODE") => apiRequest<{ staff: NonNullable<StaffSessionView["staff"]> }>("/api/admin/auth/2fa/verify-login", { method: "POST", body: JSON.stringify({ challengeToken, code, method }) });
+export const logoutStaff = () => apiRequest<{ success: boolean }>("/api/admin/auth/logout", { method: "POST", body: "{}" });
+export const forgotStaffPassword = (email: string) => apiRequest<{ message: string }>("/api/admin/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) });
+export const inspectStaffInvitation = (token: string) => apiRequest<{ email: string; displayName: string; expiresAt: string }>(`/api/admin/auth/invitation?token=${encodeURIComponent(token)}`);
+export const acceptStaffInvitation = (token: string, password: string, confirmPassword: string) => apiRequest("/api/admin/auth/accept-invitation", { method: "POST", body: JSON.stringify({ token, password, confirmPassword }) });
+export const resetStaffPassword = (token: string, password: string, confirmPassword: string) => apiRequest("/api/admin/auth/reset-password", { method: "POST", body: JSON.stringify({ token, password, confirmPassword }) });
+export const changeStaffPassword = (currentPassword: string, newPassword: string, confirmPassword: string) => apiRequest("/api/admin/auth/change-password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword, confirmPassword }) });
+export const startStaffTotpEnrollment = () => apiRequest<{ secret: string; otpauthUri: string; issuer: string; accountLabel: string }>("/api/admin/auth/2fa/totp/start", { method: "POST", body: "{}" });
+export const verifyStaffTotpEnrollment = (code: string) => apiRequest<{ staff: NonNullable<StaffSessionView["staff"]>; recoveryCodes: string[] }>("/api/admin/auth/2fa/totp/verify", { method: "POST", body: JSON.stringify({ code }) });
+export const disableStaffTwoFactor = (password: string, code: string) => apiRequest<{ staff: NonNullable<StaffSessionView["staff"]> }>("/api/admin/auth/2fa/disable", { method: "POST", body: JSON.stringify({ password, code }) });
+export const regenerateStaffRecoveryCodes = (password: string, code: string) => apiRequest<{ recoveryCodes: string[]; recoveryCodesRemaining: number }>("/api/admin/auth/2fa/recovery-codes/regenerate", { method: "POST", body: JSON.stringify({ password, code }) });
+export const deferStaffTwoFactorReminder = (days: 7 | 14) => apiRequest<{ staff: NonNullable<StaffSessionView["staff"]> }>("/api/admin/auth/2fa/remind-later", { method: "POST", body: JSON.stringify({ days }) });
+export const listStaff = () => apiRequest<{ staff: StaffManagementView[] }>("/api/admin/staff");
+export const getStaffRoles = () => apiRequest<{ roles: StaffRoleView[]; permissions: StaffPermissionView[] }>("/api/admin/roles");
+export const inviteStaffMember = (input: { displayName: string; email: string; baseRole: string; grantedPermissions: string[]; revokedPermissions: string[] }) => apiRequest<{ staff: StaffManagementView }>("/api/admin/staff/invitations", { method: "POST", body: JSON.stringify(input) });
+export const updateStaffAccess = (id: string, input: { baseRole: string; grantedPermissions: string[]; revokedPermissions: string[]; confirmHighRisk: boolean }) => apiRequest<{ staff: StaffManagementView }>(`/api/admin/staff/${encodeURIComponent(id)}/authorization`, { method: "PATCH", body: JSON.stringify(input) });
+export const staffLifecycleAction = (id: string, action: "disable" | "enable" | "revoke-sessions" | "send-password-reset" | "resend-invitation" | "revoke-invitation") => apiRequest<{ staff: StaffManagementView }>(`/api/admin/staff/${encodeURIComponent(id)}/${action}`, { method: "POST", body: "{}" });

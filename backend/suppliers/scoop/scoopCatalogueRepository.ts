@@ -2,6 +2,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { ScoopCatalogueProduct, ScoopCatalogueSyncSummary, ScoopFeedParseResult, ScoopLaunchAssortmentState, ScoopLogisticsAuditEntry, ScoopLogisticsEnrichmentSummary, ScoopLogisticsMetadata, ScoopReconciliationStatus, ScoopSourceObservation, ScoopWebsiteImportRow, ScoopWebsiteImportSummary } from "./scoopTypes.js";
 import { deriveScoopLogisticsStatus, effectiveScoopLogisticsMetadata, upsertScoopLogisticsSource, validateScoopLogisticsValues } from "./scoopLogisticsMetadata.js";
+import { loadPersistenceConfig } from "../../persistence/config.js";
+import { readSupplierStore, replaceSupplierStore } from "../../persistence/catalogueRepository.js";
 
 interface ScoopCatalogueStore {
   version: 1;
@@ -16,6 +18,10 @@ function getStorePath() {
 }
 
 async function readStore(): Promise<ScoopCatalogueStore> {
+  if (loadPersistenceConfig().provider === "POSTGRES") {
+    const store = await readSupplierStore<ScoopCatalogueProduct>("SCOOP");
+    return { version: 1, products: store.products, lastSync: store.lastSync as ScoopCatalogueSyncSummary | undefined, lastEnrichment: store.lastEnrichment as ScoopLogisticsEnrichmentSummary | undefined, logisticsAudit: (store.logisticsAudit as ScoopLogisticsAuditEntry[] | undefined) ?? [] };
+  }
   try {
     const raw = await readFile(getStorePath(), "utf8");
     const parsed = JSON.parse(raw) as Partial<ScoopCatalogueStore>;
@@ -49,6 +55,7 @@ async function readStore(): Promise<ScoopCatalogueStore> {
 }
 
 async function writeStore(store: ScoopCatalogueStore) {
+  if (loadPersistenceConfig().provider === "POSTGRES") { await replaceSupplierStore("SCOOP", store); return; }
   const storePath = getStorePath();
   await mkdir(dirname(storePath), { recursive: true });
   await writeFile(storePath, JSON.stringify(store, null, 2));
@@ -115,6 +122,7 @@ export async function getScoopCatalogueProduct(supplierSku: string) {
 
 export async function getScoopCatalogueSyncStatus() {
   const store = await readStore();
+  const urlStatus = (product: ScoopCatalogueProduct) => product.productPageResolution?.urlStatus ?? (product.productPageResolution?.status === "RESOLVED" && product.productPageResolution.productPageUrl ? "VERIFIED" : "UNKNOWN");
   const logistics = {
     complete: store.products.filter((product) => product.logisticsMetadata?.status === "COMPLETE").length,
     partial: store.products.filter((product) => ["WEIGHT_ONLY", "DIMENSIONS_ONLY"].includes(product.logisticsMetadata?.status ?? "")).length,
@@ -122,6 +130,12 @@ export async function getScoopCatalogueSyncStatus() {
     adminOverrides: store.products.filter((product) => product.logisticsMetadata?.source === "ADMIN").length,
     adminImports: store.products.filter((product) => product.logisticsMetadata?.source === "ADMIN_IMPORT").length,
     supplierPage: store.products.filter((product) => product.logisticsMetadata?.source === "SUPPLIER_PRODUCT_PAGE").length,
+    scoopPageObservations: store.products.filter((product) => product.logisticsSources?.some((source) => source.source === "SUPPLIER_PRODUCT_PAGE")).length,
+    completeFromScoopPackage: store.products.filter((product) => product.logisticsMetadata?.status === "COMPLETE" && product.logisticsMetadata.packageSource === "SUPPLIER_PRODUCT_PAGE" && product.logisticsMetadata.shippingBasis === "PACKAGE").length,
+    completeFromScoopProductFallback: store.products.filter((product) => product.logisticsMetadata?.status === "COMPLETE" && product.logisticsMetadata.productSource === "SUPPLIER_PRODUCT_PAGE" && product.logisticsMetadata.shippingBasis === "PRODUCT_DIMENSIONS_FALLBACK").length,
+    blocked: store.products.filter((product) => product.logisticsLastFailure === "SOURCE_BLOCKED").length,
+    noMeasurements: store.products.filter((product) => product.logisticsLastFailure === "MEASUREMENTS_NOT_FOUND").length,
+    selectedForLaunchComplete: store.products.filter((product) => product.launchAssortment?.state === "SELECTED_FOR_LAUNCH" && product.logisticsMetadata?.status === "COMPLETE").length,
     supplierFeed: store.products.filter((product) => product.logisticsMetadata?.source === "SUPPLIER_FEED").length,
     manufacturer: store.products.filter((product) => product.logisticsMetadata?.source === "MANUFACTURER").length,
     unknown: store.products.filter((product) => product.logisticsMetadata?.source === "UNKNOWN").length,
@@ -142,6 +156,14 @@ export async function getScoopCatalogueSyncStatus() {
     },
     lastSync: store.lastSync,
     lastEnrichment: store.lastEnrichment,
+    canonicalUrls: {
+      verified: store.products.filter((product) => urlStatus(product) === "VERIFIED").length,
+      reviewRequired: store.products.filter((product) => urlStatus(product) === "REVIEW_REQUIRED").length,
+      unknown: store.products.filter((product) => urlStatus(product) === "UNKNOWN").length,
+      conflict: store.products.filter((product) => urlStatus(product) === "CONFLICT").length,
+      selectedVerified: store.products.filter((product) => product.launchAssortment?.state === "SELECTED_FOR_LAUNCH" && urlStatus(product) === "VERIFIED").length,
+      selectedMissing: store.products.filter((product) => product.launchAssortment?.state === "SELECTED_FOR_LAUNCH" && urlStatus(product) !== "VERIFIED").length,
+    },
     logistics,
   };
 }
@@ -178,6 +200,9 @@ export async function syncScoopCatalogueProducts(parsed: ScoopFeedParseResult): 
       logisticsSources: existing?.logisticsSources,
       logisticsLastAttemptAt: existing?.logisticsLastAttemptAt,
       logisticsLastError: existing?.logisticsLastError,
+      logisticsLastFailure: existing?.logisticsLastFailure,
+      confirmedHardwareRevision: existing?.confirmedHardwareRevision,
+      capturedContentSuggestions: existing?.capturedContentSuggestions,
       launchAssortment: existing?.launchAssortment,
       sourceObservations,
       reconciliationStatus,
@@ -347,10 +372,11 @@ export async function saveScoopLogisticsSource(input: { supplierSku: string; rec
   const fields = [
     "weightGrams", "lengthMm", "widthMm", "heightMm",
     "packageWeightGrams", "packageLengthMm", "packageWidthMm", "packageHeightMm",
-    "manufacturer", "model", "identityConfidence", "sourceConfidence", "shippingBasis", "notes",
+    "manufacturer", "model", "identityConfidence", "sourceConfidence", "shippingBasis", "contentFingerprint", "notes",
   ] as const;
   if (previous && fields.every((field) => previous[field] === input.record[field])) return { outcome: "UNCHANGED" as const, product };
-  validateScoopLogisticsValues(input.record);
+  const validationValues = input.record.measurementScope === "PACKAGE" ? { weightGrams: input.record.packageWeightGrams, lengthMm: input.record.packageLengthMm, widthMm: input.record.packageWidthMm, heightMm: input.record.packageHeightMm } : input.record;
+  validateScoopLogisticsValues(validationValues);
   const sources = upsertScoopLogisticsSource(existingSources, input.record); const now = new Date().toISOString();
   const next = { ...product, logisticsSources: sources, logisticsMetadata: effectiveScoopLogisticsMetadata(sources), updatedAt: now };
   store.products[index] = next;

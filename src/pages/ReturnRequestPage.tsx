@@ -7,6 +7,7 @@ import { canRequestReturn } from "@/lib/order-status";
 import { usePageTitle } from "@/lib/page-title";
 import { useOrders } from "@/state/orders";
 import type { ReturnRequestItem } from "@/types/order";
+import { guestOrderAccessHeaders, usePrivateOrderPage } from "@/lib/guest-order-access";
 
 const returnReasons = [
   "Incorrect item",
@@ -21,15 +22,16 @@ export function ReturnRequestPage() {
   usePageTitle("Request return | TekCentral");
   const { orderNumber = "" } = useParams();
   const navigate = useNavigate();
-  const { getOrder, createReturnRequest, saveOrderMirror } = useOrders();
-  const localOrder = getOrder(orderNumber);
-  const [backendOrder, setBackendOrder] = useState(localOrder);
+  const { saveOrderMirror } = useOrders();
+  const [backendOrder, setBackendOrder] = useState<Parameters<typeof saveOrderMirror>[0]>();
   const [loading, setLoading] = useState(Boolean(orderNumber));
-  const order = backendOrder ?? localOrder;
+  const [accessFailed, setAccessFailed] = useState(false);
+  const order = backendOrder;
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [reason, setReason] = useState(returnReasons[0]);
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
+  usePrivateOrderPage(orderNumber);
 
   const returnedQuantities = useMemo(() => {
     const totals: Record<string, number> = {};
@@ -45,14 +47,15 @@ export function ReturnRequestPage() {
     if (!orderNumber) {
       return;
     }
-    apiRequest<{ order: NonNullable<typeof localOrder> }>(
+    apiRequest<{ order: Parameters<typeof saveOrderMirror>[0] }>(
       `/api/orders/${encodeURIComponent(orderNumber)}`,
+      { headers: guestOrderAccessHeaders(orderNumber) },
     )
       .then((response) => {
         setBackendOrder(response.order);
         saveOrderMirror(response.order);
       })
-      .catch(() => undefined)
+      .catch(() => setAccessFailed(true))
       .finally(() => setLoading(false));
   }, [orderNumber, saveOrderMirror]);
 
@@ -66,17 +69,18 @@ export function ReturnRequestPage() {
     );
   }
 
-  if (!order) {
+  if (!order || accessFailed) {
     return (
       <section className="bg-white px-4 py-12 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-3xl rounded-lg border border-[#E4E7EC] bg-white p-8 text-center shadow-sm">
-          <h1 className="text-3xl font-black text-[#0A0A0A]">Order not found.</h1>
+          <h1 className="text-3xl font-black text-[#0A0A0A]">We couldn't access this order.</h1>
           <Link
-            to="/orders"
+            to={`/account?redirect=${encodeURIComponent(`/order/${orderNumber}/return`)}`}
             className="mt-6 inline-flex rounded-md bg-[var(--tek-accent)] px-5 py-3 text-sm font-black text-[var(--tek-accent-ink)]"
           >
-            View Orders
+            Sign In
           </Link>
+          <Link to="/shop" className="ml-3 mt-6 inline-flex rounded-md border border-[#E4E7EC] px-5 py-3 text-sm font-black text-[#0A0A0A]">Shop Technology</Link>
         </div>
       </section>
     );
@@ -106,7 +110,7 @@ export function ReturnRequestPage() {
     })
     .filter((item): item is ReturnRequestItem => Boolean(item));
 
-  const submitReturn = (event: FormEvent<HTMLFormElement>) => {
+  const submitReturn = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!eligible) {
       setError("This order is not currently eligible for a return request.");
@@ -116,13 +120,17 @@ export function ReturnRequestPage() {
       setError("Select at least one item to return.");
       return;
     }
-    createReturnRequest({
-      orderNumber: order.orderNumber,
-      items: selectedItems,
-      reason,
-      notes: notes.trim() || undefined,
-    });
-    navigate(`/order/${order.orderNumber}`);
+    try {
+      const response = await apiRequest<{ order: typeof order }>(`/api/orders/${encodeURIComponent(order.orderNumber)}/returns`, {
+        method: "POST",
+        headers: guestOrderAccessHeaders(order.orderNumber),
+        body: JSON.stringify({ items: selectedItems.map(({ productId, quantity }) => ({ productId, quantity })), reason, notes: notes.trim() || undefined }),
+      });
+      saveOrderMirror(response.order);
+      navigate(`/order/${order.orderNumber}`);
+    } catch {
+      setError("Return request could not be completed. Try again.");
+    }
   };
 
   return (

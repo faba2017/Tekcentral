@@ -25,7 +25,15 @@ import { ApiError, apiRequest } from "@/lib/api";
 import { useCart } from "@/state/cart";
 import { useOrders } from "@/state/orders";
 import { getCustomerPaymentError } from "@/lib/payment-errors";
+import {
+  guestOrderAccessHeaders,
+  storeGuestOrderAccess,
+} from "@/lib/guest-order-access";
 import { GooglePlacesAddressInput } from "@/components/commerce/GooglePlacesAddressInput";
+import { productAvailability } from "@/lib/product-availability";
+import type { CustomerAddress } from "@/lib/customer-address";
+import { useCustomerAuth } from "@/state/customer-auth";
+import { emailHref, policyLinks, publicBusiness } from "@/lib/public-business";
 import type {
   CheckoutCustomer,
   DeliveryAddress,
@@ -161,7 +169,10 @@ export function CheckoutPage() {
   usePageTitle("Checkout | TekCentral");
   const { lines } = useCart();
   const { saveOrderMirror } = useOrders();
+  const { state: customerAuthState, customer: accountCustomer } = useCustomerAuth();
   const [draft, setDraft] = useState<CheckoutDraft>(readDraft);
+  const [savedAddresses, setSavedAddresses] = useState<CustomerAddress[]>([]);
+  const [selectedSavedAddressId, setSelectedSavedAddressId] = useState("");
   const [step, setStep] = useState<CheckoutStep>("customer");
   const [errors, setErrors] = useState<CheckoutErrors>({});
   const [formMessage, setFormMessage] = useState("");
@@ -177,6 +188,7 @@ export function CheckoutPage() {
   const [placesUnavailable, setPlacesUnavailable] = useState(false);
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const paymentNoticeRef = useRef<HTMLDivElement | null>(null);
+  const accountPrefillStartedRef = useRef(false);
   const quoteRequestRef = useRef(0);
   const draftRef = useRef(draft);
 
@@ -184,6 +196,31 @@ export function CheckoutPage() {
     draftRef.current = draft;
     window.localStorage.setItem(checkoutDraftKey, JSON.stringify(draft));
   }, [draft]);
+  useEffect(() => {
+    if (customerAuthState === "unauthenticated") { accountPrefillStartedRef.current = false; window.queueMicrotask(() => { setSavedAddresses([]); setSelectedSavedAddressId(""); }); return; }
+    if (customerAuthState !== "authenticated" || !accountCustomer || accountPrefillStartedRef.current) return;
+    accountPrefillStartedRef.current = true;
+    window.queueMicrotask(() => setDraft((current) => ({ ...current, customer: { ...current.customer, firstName: current.customer.firstName || accountCustomer.firstName, lastName: current.customer.lastName || accountCustomer.lastName, email: current.customer.email || accountCustomer.email, mobile: current.customer.mobile || accountCustomer.phone || "" } })));
+    void apiRequest<{ addresses: CustomerAddress[] }>("/api/account/addresses").then(({ addresses }) => {
+      setSavedAddresses(addresses);
+      const defaultAddress = addresses.find((address) => address.isDefault);
+      const currentAddress = draftRef.current.deliveryAddress;
+      const hasAddressDraft = Boolean(currentAddress.streetAddress || currentAddress.suburb || currentAddress.city || currentAddress.province || currentAddress.postalCode);
+      if (defaultAddress && !hasAddressDraft) setSelectedSavedAddressId(defaultAddress.id);
+      setDraft((current) => ({
+        ...current,
+        deliveryAddress: defaultAddress ? {
+          ...current.deliveryAddress,
+          streetAddress: current.deliveryAddress.streetAddress || defaultAddress.addressLine1,
+          suburb: current.deliveryAddress.suburb || defaultAddress.suburb,
+          city: current.deliveryAddress.city || defaultAddress.city,
+          province: current.deliveryAddress.province || defaultAddress.province,
+          postalCode: current.deliveryAddress.postalCode || defaultAddress.postalCode,
+          country: current.deliveryAddress.country || defaultAddress.country,
+        } : current.deliveryAddress,
+      }));
+    }).catch(() => undefined);
+  }, [accountCustomer, customerAuthState]);
 
   const cartItems = useMemo(
     () =>
@@ -200,6 +237,7 @@ export function CheckoutPage() {
     (sum, item) => sum + item.product.price * item.line.quantity,
     0,
   );
+  const unavailableItems = cartItems.filter(({ product }) => !productAvailability(product).purchasable);
   const deliveryMethod =
     deliveryMethods.find((method) => method.id === draft.deliveryMethodId) ??
     deliveryMethods[0];
@@ -324,6 +362,10 @@ export function CheckoutPage() {
   }, [automaticQuoteKey, cartItems, quoteExpired, requestShippingQuote, step]);
 
   const goNext = async () => {
+    if (unavailableItems.length > 0) {
+      setFormMessage("One or more products need an availability review before checkout can continue.");
+      return;
+    }
     if (!validateStep(step)) return;
     if (step === "delivery" && (!shippingQuote || shippingQuote.status !== "READY" || Date.parse(shippingQuote.expiresAt) <= Date.now()) && !(await requestShippingQuote({ ...draft.deliveryAddress }, cartItems.map(({ product, line }) => ({ productId: product.id, quantity: line.quantity })), draft.deliveryMethodId))) return;
     const next = steps[currentStepIndex + 1];
@@ -348,7 +390,10 @@ export function CheckoutPage() {
   const placeOrder = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (isPayfastSubmitting) return;
-    if (cartItems.length === 0 || !paymentMethod || !validateStep("review")) return;
+    if (cartItems.length === 0 || unavailableItems.length > 0 || !paymentMethod || !validateStep("review")) {
+      if (unavailableItems.length > 0) setFormMessage("One or more products need an availability review before checkout can continue.");
+      return;
+    }
     setIsPayfastSubmitting(true);
     setPaymentError("");
     setPaymentState("redirecting");
@@ -377,7 +422,10 @@ export function CheckoutPage() {
       }
       let orderNumber = checkoutOrderNumber;
       if (!orderNumber) {
-        const { order } = await apiRequest<{ order: Order }>("/api/orders", {
+        const { order, guestAccessToken } = await apiRequest<{
+          order: Order;
+          guestAccessToken?: string;
+        }>("/api/orders", {
           method: "POST",
           body: JSON.stringify({
             customer: {
@@ -402,6 +450,7 @@ export function CheckoutPage() {
             })),
           }),
         });
+        storeGuestOrderAccess(order.orderNumber, guestAccessToken);
         orderNumber = order.orderNumber;
         setCheckoutOrderNumber(orderNumber);
         saveOrderMirror({ ...order, returns: [], refunds: [] });
@@ -410,8 +459,9 @@ export function CheckoutPage() {
       const paymentRequest = await apiRequest<{
         actionUrl: string;
         fields: Record<string, string>;
-      }>("/api/payments/payfast/create", {
+      }>("/api/payments/create", {
         method: "POST",
+        headers: guestOrderAccessHeaders(orderNumber),
         body: JSON.stringify({ orderNumber }),
       });
       redirectToPayfast(paymentRequest.actionUrl, paymentRequest.fields);
@@ -476,6 +526,11 @@ export function CheckoutPage() {
             Back to cart
           </Link>
         </div>
+        {unavailableItems.length > 0 && (
+          <div className="mt-6 rounded-md border border-[#FEC84B] bg-[#FFFAEB] p-4 text-sm font-semibold text-[#7A2E0E]" role="status">
+            One or more products need an availability review before checkout can continue. Return to your cart to review them.
+          </div>
+        )}
 
         <ol className="mt-8 grid gap-2 rounded-lg border border-[#E4E7EC] bg-white p-2 sm:grid-cols-4">
           {steps.map((item, index) => {
@@ -615,6 +670,7 @@ export function CheckoutPage() {
             {step === "delivery" && (
               <div>
                 <h2 className="text-2xl font-black text-[#0A0A0A]">Delivery</h2>
+                {savedAddresses.length > 0 && <label className="mt-6 block text-sm font-black text-[#0A0A0A]">Saved address<select value={selectedSavedAddressId} onChange={(event) => { const address = savedAddresses.find((item) => item.id === event.target.value); setSelectedSavedAddressId(event.target.value); if (address) applySelectedAddress({ streetAddress: address.addressLine1, suburb: address.suburb, city: address.city, province: address.province, postalCode: address.postalCode, country: address.country }); }} className="mt-2 h-12 w-full rounded-md border border-[#E4E7EC] bg-white px-3 text-sm font-semibold outline-none focus:border-[var(--tek-accent)] focus:ring-4 focus:ring-[rgba(70,157,139,0.14)]"><option value="">Choose a saved address</option>{savedAddresses.map((address) => <option key={address.id} value={address.id}>{address.label || `${address.addressLine1}, ${address.city}`}{address.isDefault ? " (Default)" : ""}</option>)}</select></label>}
                 <div className="mt-6 grid gap-4 sm:grid-cols-2">
                   <GooglePlacesAddressInput value={draft.deliveryAddress.streetAddress} onChange={(value) => setAddress("streetAddress", value)} onSelect={applySelectedAddress} onUnavailable={placesUnavailableHandler} onAvailable={placesAvailableHandler} error={errors.streetAddress} errorId="streetAddress-error" />
                   {placesUnavailable && <p className="sm:col-span-2 -mt-2 text-xs font-semibold text-[#727986]">Address suggestions are unavailable. You can still enter the address manually.</p>}
@@ -811,6 +867,10 @@ export function CheckoutPage() {
                 </div>
               </div>
             )}
+
+            {step === "review" && <p className="mt-7 rounded-md bg-[#F6F7F9] p-4 text-xs font-semibold leading-5 text-[#475467]">By placing your order, you agree to the <Link to="/terms" className="font-black text-[#176B5C] underline underline-offset-2">Terms & Conditions</Link> and acknowledge the {policyLinks.slice(1).map((link, index) => <span key={link.to}>{index > 0 ? index === policyLinks.length - 2 ? " and " : ", " : ""}<Link to={link.to} className="font-black text-[#176B5C] underline underline-offset-2">{link.label}</Link></span>)}.</p>}
+
+            {step === "review" && <p className="mt-3 text-center text-xs font-semibold leading-5 text-[#667085]">Need help with your order? <a className="font-black text-[#176B5C] underline underline-offset-2" href={emailHref(publicBusiness.email.support)}>{publicBusiness.email.support}</a> · <a className="font-black text-[#176B5C] underline underline-offset-2" href={publicBusiness.phone.href}>{publicBusiness.phone.display}</a></p>}
 
             <div className="mt-8 flex flex-col gap-3 border-t border-[#E4E7EC] pt-5 sm:flex-row sm:justify-between">
               <button

@@ -10,7 +10,7 @@ import {
   FiZap,
 } from "react-icons/fi";
 import { getProductBySlug } from "@/data/catalogue";
-import { usePageTitle } from "@/lib/page-title";
+import { usePageMetadata } from "@/lib/page-metadata";
 
 const solutionCards = [
   {
@@ -52,7 +52,7 @@ const steps = [
 ];
 
 export function BusinessPage() {
-  usePageTitle("Business Solutions | TekCentral");
+  usePageMetadata({ title: "Business Technology Solutions | TekCentral", description: "Plan office technology, network infrastructure, security, printing, backup power and IT procurement with TekCentral Business.", path: "/business" });
   const [params] = useSearchParams();
   const product = params.get("product")
     ? getProductBySlug(params.get("product") ?? "")

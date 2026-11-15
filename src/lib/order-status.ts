@@ -93,8 +93,12 @@ export const supplierOrderStatusLabels: Record<SupplierOrderStatus, string> = {
 export const operationalHoldReasonLabels: Record<OperationalHoldReason, string> = {
   ADDRESS_REVIEW: "Address review",
   PAYMENT_REVIEW: "Payment review",
+  SUPPLIER_PROCUREMENT_ISSUE: "Supplier / procurement issue",
+  INVENTORY_STOCK_ISSUE: "Inventory / stock issue",
+  DELIVERY_COURIER_ISSUE: "Delivery / courier issue",
   INVENTORY_EXCEPTION: "Inventory exception",
   CUSTOMER_REQUEST: "Customer request",
+  OTHER_MANUAL: "Other / manual",
   MANUAL: "Manual hold",
 };
 

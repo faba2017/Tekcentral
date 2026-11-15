@@ -85,12 +85,12 @@ export function sortProducts(products: Product[], sort: SortOption = "featured")
 }
 
 export function getRelatedProducts(product: Product, products: Product[]) {
+  const current = product;
   return products
-    .filter(
-      (candidate) =>
-        candidate.id !== product.id &&
-        (candidate.categorySlug === product.categorySlug ||
-          candidate.brand === product.brand),
-    )
+    .filter((candidate) => candidate.id !== product.id)
+    .map((candidate) => ({ candidate, score: Number(Boolean(current.productTypeId && candidate.productTypeId === current.productTypeId)) * 30 + Number(Boolean(current.subcategoryId && candidate.subcategoryId === current.subcategoryId)) * 20 + Number(candidate.categoryId === current.categoryId) * 10 + Number(candidate.brand === product.brand) * 2 }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(({ candidate }) => candidate)
     .slice(0, 3);
 }

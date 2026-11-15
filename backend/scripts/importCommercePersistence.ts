@@ -1,0 +1,2 @@
+import { commerceSourceFingerprint, commerceSourceSummary, importCommerce, readLegacyCommerce } from "../persistence/commerceMigration.js";
+const source=await readLegacyCommerce();const apply=process.argv.includes("--apply");console.log(JSON.stringify(apply?{mode:"APPLY",...(await importCommerce(source))}:{mode:"DRY_RUN",fingerprint:commerceSourceFingerprint(source),...commerceSourceSummary(source)},null,2));

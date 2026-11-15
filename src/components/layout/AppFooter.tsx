@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { emailHref, publicBusiness } from "@/lib/public-business";
 
 const footerGroups = [
   {
@@ -21,20 +22,28 @@ const footerGroups = [
     ],
   },
   {
-    title: "Support",
+    title: "Customer Care",
     links: [
-      { label: "Contact", to: "/contact" },
-      { label: "Ask Zeus", to: "/zeus" },
+      { label: "Contact Us", to: "/contact" },
+      { label: "Shipping & Delivery", to: "/shipping-delivery" },
+      { label: "Refund Policy", to: "/refund-policy" },
+      { label: "Cancellation Policy", to: "/cancellation-policy" },
+    ],
+  },
+  {
+    title: "Legal",
+    links: [
+      { label: "Terms & Conditions", to: "/terms" },
+      { label: "Privacy Policy", to: "/privacy" },
       { label: "Account", to: "/account" },
-      { label: "Returns", to: "/returns" },
+      { label: "Ask Zeus", to: "/zeus" },
     ],
   },
   {
     title: "Company",
     links: [
       { label: "About", to: "/about" },
-      { label: "Terms", to: "/terms" },
-      { label: "Privacy", to: "/privacy" },
+      { label: "Contact Us", to: "/contact" },
     ],
   },
 ];
@@ -51,11 +60,19 @@ export function AppFooter() {
             Technology, made easier. Technology for home, work and business.
           </p>
           <p className="mt-6 text-sm font-semibold text-[var(--tek-accent)]">
-            tekcentral.co.za | South Africa
+            {publicBusiness.websiteLabel} | {publicBusiness.country}
           </p>
+          <p className="mt-3 text-xs font-semibold leading-5 text-zinc-500">
+            {publicBusiness.legalName}<br />Reg. {publicBusiness.registrationNumber}
+          </p>
+          <address className="mt-4 space-y-2 text-sm not-italic text-zinc-400">
+            <a className="block transition hover:text-[var(--tek-accent)]" href={emailHref(publicBusiness.email.support)}>{publicBusiness.email.support}</a>
+            <a className="block transition hover:text-[var(--tek-accent)]" href={emailHref(publicBusiness.email.sales)}>{publicBusiness.email.sales}</a>
+            <a className="block transition hover:text-[var(--tek-accent)]" href={publicBusiness.phone.href}>{publicBusiness.phone.display}</a>
+          </address>
         </div>
 
-        <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-5">
           {footerGroups.map((group) => (
             <div key={group.title}>
               <h2 className="text-sm font-bold uppercase tracking-[0.16em] text-zinc-300">

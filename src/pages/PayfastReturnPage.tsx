@@ -11,6 +11,7 @@ import { usePageTitle } from "@/lib/page-title";
 import { useCart } from "@/state/cart";
 import { useOrders } from "@/state/orders";
 import type { PaymentStatus } from "@/types/order";
+import { guestOrderAccessHeaders, usePrivateOrderPage } from "@/lib/guest-order-access";
 
 interface PaymentStatusResponse {
   orderNumber: string;
@@ -26,6 +27,7 @@ export function PayfastReturnPage() {
   const { updatePaymentStatus } = useOrders();
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("PENDING");
   const [statusUnavailable, setStatusUnavailable] = useState(!orderNumber);
+  usePrivateOrderPage(orderNumber);
 
   const checkStatus = useCallback(async () => {
     if (!orderNumber) {
@@ -35,6 +37,7 @@ export function PayfastReturnPage() {
     try {
       const response = await apiRequest<PaymentStatusResponse>(
         `/api/payments/${encodeURIComponent(orderNumber)}/status`,
+        { headers: guestOrderAccessHeaders(orderNumber) },
       );
       setStatusUnavailable(false);
       setPaymentStatus(response.paymentStatus);

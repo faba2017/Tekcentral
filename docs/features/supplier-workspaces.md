@@ -39,6 +39,8 @@ pages.
 ## Central Supplier Registry
 
 All supplier workspaces must register through the central supplier registry.
+
+Supplier source configuration belongs in supplier-local navigation (`Supplier → Sources`), never in global Admin navigation. The shared source platform provides stable identity, authority, state, health and real operation capabilities for every registered supplier. Persisted records and history remain supplier-neutral while adapters own format-specific acquisition, parsing and reconciliation. The Admin UI must render source actions from backend capability metadata and must not infer them from supplier names.
 The registry is the source of truth for supplier display names, routes, enabled
 state and workspace capabilities.
 

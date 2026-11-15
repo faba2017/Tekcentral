@@ -1,5 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { loadPersistenceConfig } from "./persistence/config.js";
+import { query } from "./persistence/postgres.js";
 export type ShippingQuoteStatus = "READY" | "PARTIAL" | "UNAVAILABLE" | "EXPIRED";
 export interface ShippingQuoteItem { productId: string; quantity: number; }
 export type ShippingDiagnosticCode = "INVALID_ADDRESS" | "UNSUPPORTED_DESTINATION" | "MISSING_LOGISTICS" | "MISSING_WEIGHT" | "MISSING_DIMENSIONS" | "RATE_NOT_CONFIGURED" | "CALCULATION_ERROR" | "UNSUPPORTED_FULFILMENT" | "SHIPPING_ESTIMATOR_FAILED" | "ADDRESS_VALIDATION_FAILED" | "STALE_LOGISTICS" | "UNKNOWN_PRODUCT_SOURCE";
@@ -8,7 +10,7 @@ export interface FulfilmentGroupQuote { groupId: string; kind: "LOCAL" | "INTERN
 export interface ShippingQuote { quoteId: string; cartFingerprint: string; items: ShippingQuoteItem[]; destination: { country: string; province: string; city?: string; suburb?: string; postalCode: string }; deliveryMethodId: string; currency: "ZAR"; fulfilmentGroups: FulfilmentGroupQuote[]; customerShippingCharge?: number; supplierShippingCost?: number; estimatedInternalFreightCost?: number; generatedAt: string; expiresAt: string; status: ShippingQuoteStatus; warnings: string[]; diagnostics?: ShippingDiagnostic[]; settingsSnapshot: unknown; }
 interface Store { version: 1; quotes: ShippingQuote[]; }
 function path(){return resolve(process.cwd(),".data","shipping-quotes.json");}
-async function readStore():Promise<Store>{try{const value=JSON.parse(await readFile(path(),"utf8")) as Store;return value.version===1&&Array.isArray(value.quotes)?value:{version:1,quotes:[]};}catch{return{version:1,quotes:[]};}}
+async function readStore():Promise<Store>{if(loadPersistenceConfig().provider==="POSTGRES")return{version:1,quotes:(await query<{payload:ShippingQuote}>("SELECT payload FROM commerce_shipping_quotes ORDER BY generated_at DESC")).rows.map(row=>row.payload)};try{const value=JSON.parse(await readFile(path(),"utf8")) as Store;return value.version===1&&Array.isArray(value.quotes)?value:{version:1,quotes:[]};}catch{return{version:1,quotes:[]};}}
 async function writeStore(store:Store){const target=path();const temp=`${target}.tmp`;await mkdir(dirname(target),{recursive:true});await writeFile(temp,JSON.stringify(store,null,2));await rename(temp,target);}
-export async function saveShippingQuote(quote:ShippingQuote){const store=await readStore();store.quotes=[quote,...store.quotes].slice(0,500);await writeStore(store);return quote;}
+export async function saveShippingQuote(quote:ShippingQuote){if(loadPersistenceConfig().provider==="POSTGRES"){await query("INSERT INTO commerce_shipping_quotes(id,cart_fingerprint,status,expires_at,payload,generated_at) VALUES($1,$2,$3,$4,$5::jsonb,$6) ON CONFLICT(id) DO UPDATE SET status=excluded.status,expires_at=excluded.expires_at,payload=excluded.payload",[quote.quoteId,quote.cartFingerprint,quote.status,quote.expiresAt,JSON.stringify(quote),quote.generatedAt]);return quote;}const store=await readStore();store.quotes=[quote,...store.quotes].slice(0,500);await writeStore(store);return quote;}
 export async function getShippingQuote(id:string){return (await readStore()).quotes.find((quote)=>quote.quoteId===id);}

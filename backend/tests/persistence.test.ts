@@ -1,0 +1,34 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadMigrationDatabaseConfig, loadPersistenceConfig, productionPersistenceBlockers } from "../persistence/config.js";
+import { LocalObjectStorage, privateInvoiceKey, productMediaKey } from "../storage/objectStorage.js";
+
+const local = loadPersistenceConfig({ NODE_ENV: "development" } as NodeJS.ProcessEnv); assert.equal(local.provider, "LOCAL"); assert.equal(local.objectStorage.provider, "LOCAL");
+assert.throws(() => loadPersistenceConfig({ NODE_ENV: "production" } as NodeJS.ProcessEnv), /PERSISTENCE_PROVIDER=POSTGRES/);
+assert.throws(() => loadPersistenceConfig({ NODE_ENV: "production", PERSISTENCE_PROVIDER: "POSTGRES", DATABASE_URL: "postgres://example", OBJECT_STORAGE_PROVIDER: "LOCAL" } as NodeJS.ProcessEnv), /OBJECT_STORAGE_PROVIDER=SPACES/);
+assert.ok(productionPersistenceBlockers({}).length > 0);
+const productionBase = { NODE_ENV: "production", PERSISTENCE_PROVIDER: "POSTGRES", DATABASE_URL: "postgres://tekcentral_runtime:secret@db.example/tekcentral", DATABASE_RUNTIME_ROLE: "tekcentral_runtime", DATABASE_MIGRATION_ROLE: "tekcentral_migration", OBJECT_STORAGE_PROVIDER: "SPACES", OBJECT_STORAGE_ENDPOINT: "https://jnb1.digitaloceanspaces.com", OBJECT_STORAGE_REGION: "jnb1", OBJECT_STORAGE_PUBLIC_BUCKET: "tekcentral-public", OBJECT_STORAGE_PRIVATE_BUCKET: "tekcentral-private", OBJECT_STORAGE_PUBLIC_ACCESS_KEY: "public-key", OBJECT_STORAGE_PUBLIC_SECRET_KEY: "public-secret", OBJECT_STORAGE_PRIVATE_ACCESS_KEY: "private-key", OBJECT_STORAGE_PRIVATE_SECRET_KEY: "private-secret", OBJECT_STORAGE_PUBLIC_BASE_URL: "https://tekcentral-public.jnb1.digitaloceanspaces.com" } as NodeJS.ProcessEnv;
+assert.doesNotThrow(() => loadPersistenceConfig(productionBase));
+assert.throws(() => loadPersistenceConfig({ ...productionBase, DATABASE_MIGRATION_ROLE: "tekcentral_runtime" }), /must be different/);
+assert.throws(() => loadPersistenceConfig({ ...productionBase, DATABASE_URL: "postgres://owner:secret@db.example/tekcentral" }), /DATABASE_RUNTIME_ROLE/);
+assert.throws(() => loadPersistenceConfig({ ...productionBase, OBJECT_STORAGE_ENDPOINT: "https://attacker.example" }), /approved DigitalOcean Spaces HTTPS endpoint/);
+assert.throws(() => loadPersistenceConfig({ ...productionBase, OBJECT_STORAGE_ENDPOINT: "http://jnb1.digitaloceanspaces.com" }), /approved DigitalOcean Spaces HTTPS endpoint/);
+assert.throws(() => loadPersistenceConfig({ ...productionBase, OBJECT_STORAGE_PRIVATE_BUCKET: "tekcentral-public" }), /must be different/);
+assert.throws(() => loadPersistenceConfig({ ...productionBase, OBJECT_STORAGE_PRIVATE_ACCESS_KEY: "" }), /OBJECT_STORAGE_PRIVATE_ACCESS_KEY/);
+const migrationBase = { ...productionBase, DATABASE_MIGRATION_URL: "postgres://tekcentral_migration:secret@db.example/tekcentral" };
+assert.equal(loadMigrationDatabaseConfig(migrationBase).databaseMigrationRole, "tekcentral_migration");
+assert.throws(() => loadMigrationDatabaseConfig(productionBase), /DATABASE_MIGRATION_URL/);
+assert.throws(() => loadMigrationDatabaseConfig({ ...migrationBase, DATABASE_MIGRATION_URL: productionBase.DATABASE_URL }), /must be different/);
+assert.throws(() => loadMigrationDatabaseConfig({ ...migrationBase, DATABASE_MIGRATION_URL: "postgres://unexpected_owner:secret@db.example/tekcentral" }), /DATABASE_MIGRATION_ROLE/);
+
+const directory = await mkdtemp(join(tmpdir(), "tekcentral-storage-")); const storage = new LocalObjectStorage(directory, "https://assets.example.test"); const bytes = new TextEncoder().encode("safe-object");
+const stored = await storage.storeObject({ key: "products/ab/test.txt", access: "PUBLIC", bytes, contentType: "text/plain" }); assert.equal(stored.byteSize, bytes.length); assert.match(stored.publicUrl!, /^https:\/\/assets\.example\.test/); assert.deepEqual(await storage.readObject(stored.key, "PUBLIC"), bytes);
+await assert.rejects(() => storage.storeObject({ key: "../secret", access: "PRIVATE", bytes, contentType: "text/plain" }), /OBJECT_KEY_INVALID/);
+await assert.rejects(() => storage.storeObject({ key: "private/test", access: "PRIVATE", bytes, contentType: "text/plain", expectedHash: "wrong" }), /OBJECT_HASH_MISMATCH/);
+await assert.rejects(() => storage.storeObject({ key: stored.key, access: "PUBLIC", bytes: new TextEncoder().encode("changed"), contentType: "text/plain" }), /OBJECT_IMMUTABLE_CONFLICT/);
+await assert.rejects(() => storage.createSignedDownload("private/test"), /AUTHORIZED_APPLICATION_ROUTE/);
+assert.equal(productMediaKey("a".repeat(64), "jpg"), `products/aa/${"a".repeat(64)}.jpg`); assert.equal(privateInvoiceKey("INV-2026-000001", "b".repeat(64)), `invoices/INV-2026-000001/${"b".repeat(64)}.pdf`);
+await storage.deleteObject(stored.key, "PUBLIC"); assert.equal(await storage.readObject(stored.key, "PUBLIC"), undefined); await rm(directory, { recursive: true, force: true });
+console.log("Persistence foundation tests passed.");

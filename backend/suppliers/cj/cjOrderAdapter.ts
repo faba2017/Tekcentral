@@ -26,6 +26,8 @@ export type CjOrderErrorCode =
   | "CJ_LOGISTICS_STOCK_UNAVAILABLE"
   | "CJ_LOGISTICS_DATA_INCOMPLETE"
   | "CJ_LOGISTICS_NO_ROUTE"
+  | "CJ_LOGISTICS_RATE_LIMITED"
+  | "CJ_LOGISTICS_TEMPORARY_ERROR"
   | "CJ_LOGISTICS_API_REJECTED"
   | "CJ_LOGISTICS_RESPONSE_INVALID"
   | "CJ_ORDER_STOCK_UNAVAILABLE"
@@ -37,6 +39,7 @@ export class CjOrderError extends Error {
   constructor(
     public code: CjOrderErrorCode,
     message: string,
+    public retryAfterMs?: number,
   ) {
     super(message);
   }
@@ -131,6 +134,8 @@ export type CjVariantDeliveryCheckStatus =
   | "STOCK_UNAVAILABLE"
   | "DATA_INCOMPLETE"
   | "VARIANT_INVALID"
+  | "RATE_LIMITED"
+  | "TEMPORARY_ERROR"
   | "API_REJECTED";
 
 export interface CjVariantDeliveryCheck {
@@ -139,6 +144,8 @@ export interface CjVariantDeliveryCheck {
   quantity: 1;
   status: CjVariantDeliveryCheckStatus;
   checkedAt: string;
+  cached?: boolean;
+  retryAfterSeconds?: number;
   message: string;
   sourceCountries: string[];
   logisticsOptions: CjLogisticsOption[];
@@ -174,6 +181,11 @@ export interface CjOrderActionResult {
 type CjOrderClient = Pick<CjClient, "request">;
 
 const defaultClient = new CjClient();
+const deliveryCheckCacheTtlMs = 10 * 60 * 1_000;
+const deliveryCheckDefaultCooldownMs = 60 * 1_000;
+const deliveryCheckCache = new Map<string, { expiresAt: number; result: CjVariantDeliveryCheck }>();
+const deliveryCheckCooldowns = new Map<string, number>();
+const deliveryChecksInFlight = new Map<string, Promise<CjVariantDeliveryCheck>>();
 const submittingLocks = new Set<string>();
 
 function nowIso() {
@@ -625,6 +637,12 @@ async function fetchCjFreightTrialOptions(input: {
           diagnostics.responseMessage = error.message;
           diagnostics.requestId = error.requestId;
           diagnostics.responseShape = "error";
+          if (error.code === "CJ_RATE_LIMITED") {
+            throw new CjOrderError("CJ_LOGISTICS_RATE_LIMITED", "CJ delivery checks are rate limited.", error.retryAfterMs);
+          }
+          if (error.code === "CJ_API_UNAVAILABLE" || error.code === "CJ_TOKEN_REFRESH_FAILED") {
+            throw new CjOrderError("CJ_LOGISTICS_TEMPORARY_ERROR", "CJ delivery service is temporarily unavailable.");
+          }
           return undefined;
         }
         throw error;
@@ -643,6 +661,12 @@ async function fetchCjFreightTrialOptions(input: {
             diagnostics.responseMessage = error.message;
             diagnostics.requestId = error.requestId;
             diagnostics.responseShape = "error";
+            if (error.code === "CJ_RATE_LIMITED") {
+              throw new CjOrderError("CJ_LOGISTICS_RATE_LIMITED", "CJ delivery checks are rate limited.", error.retryAfterMs);
+            }
+            if (error.code === "CJ_API_UNAVAILABLE" || error.code === "CJ_TOKEN_REFRESH_FAILED") {
+              throw new CjOrderError("CJ_LOGISTICS_TEMPORARY_ERROR", "CJ delivery service is temporarily unavailable.");
+            }
             diagnosticReasons.push(error.message || "CJ trial could not be evaluated.");
             return undefined;
           }
@@ -680,13 +704,17 @@ function deliveryCheckStatusFromError(error: CjOrderError): CjVariantDeliveryChe
   if (error.code === "CJ_LOGISTICS_STOCK_UNAVAILABLE") return "STOCK_UNAVAILABLE";
   if (error.code === "CJ_LOGISTICS_DATA_INCOMPLETE") return "DATA_INCOMPLETE";
   if (error.code === "CJ_LOGISTICS_VARIANT_INVALID") return "VARIANT_INVALID";
+  if (error.code === "CJ_LOGISTICS_RATE_LIMITED") return "RATE_LIMITED";
+  if (error.code === "CJ_LOGISTICS_TEMPORARY_ERROR") return "TEMPORARY_ERROR";
   if (error.code === "CJ_LOGISTICS_API_REJECTED") return "API_REJECTED";
   return "API_REJECTED";
 }
 
 function deliveryCheckMessage(status: CjVariantDeliveryCheckStatus) {
   if (status === "AVAILABLE") return "Delivery to South Africa available ✓";
-  if (status === "NO_ROUTE") return "No CJ shipping method is currently available to South Africa for this variant.";
+  if (status === "NO_ROUTE") return "No supported CJ delivery method to South Africa was found for this variant.";
+  if (status === "RATE_LIMITED") return "CJ is temporarily limiting delivery checks. Try again shortly.";
+  if (status === "TEMPORARY_ERROR") return "Delivery check could not be completed. Try again.";
   if (status === "SOURCE_UNRESOLVED") return "CJ source warehouse or country could not be resolved for this variant.";
   if (status === "STOCK_UNAVAILABLE") return "CJ stock is not currently available for this variant.";
   if (status === "DATA_INCOMPLETE") return "CJ logistics data is incomplete for this variant.";
@@ -721,17 +749,63 @@ function normalizeUnavailableReasons(raw: unknown) {
 }
 
 export async function checkCjVariantDeliveryToSouthAfrica(input: {
+  supplierProductId?: string;
   supplierVariantId: string;
   client?: CjOrderClient;
+  useCache?: boolean;
+  now?: () => number;
+  cacheTtlMs?: number;
 }): Promise<CjVariantDeliveryCheck> {
   const client = input.client ?? defaultClient;
   const supplierVariantId = input.supplierVariantId.trim();
   if (!supplierVariantId) {
     throw new CjOrderError("CJ_LOGISTICS_VARIANT_INVALID", "Select an exact CJ variant before checking delivery.");
   }
-  const checkedAt = nowIso();
+  const now = input.now ?? Date.now;
+  const useCache = input.useCache ?? !input.client;
+  const cacheKey = `${input.supplierProductId?.trim() || "UNKNOWN_PRODUCT"}:${supplierVariantId}:ZA`;
+  const currentTime = now();
+  const cached = useCache ? deliveryCheckCache.get(cacheKey) : undefined;
+  if (cached && cached.expiresAt > currentTime) return { ...cached.result, cached: true };
+  if (cached) deliveryCheckCache.delete(cacheKey);
+  const cooldownUntil = useCache ? deliveryCheckCooldowns.get(cacheKey) : undefined;
+  if (cooldownUntil && cooldownUntil > currentTime) {
+    return {
+      supplierVariantId,
+      destinationCountryCode: "ZA",
+      quantity: 1,
+      status: "RATE_LIMITED",
+      checkedAt: new Date(currentTime).toISOString(),
+      retryAfterSeconds: Math.max(1, Math.ceil((cooldownUntil - currentTime) / 1_000)),
+      message: deliveryCheckMessage("RATE_LIMITED"),
+      sourceCountries: [],
+      logisticsOptions: [],
+    };
+  }
+  const existingRequest = useCache ? deliveryChecksInFlight.get(cacheKey) : undefined;
+  if (existingRequest) return existingRequest;
+  const request = runCjVariantDeliveryCheck({ client, supplierProductId: input.supplierProductId, supplierVariantId, checkedAt: new Date(currentTime).toISOString() });
+  if (useCache) deliveryChecksInFlight.set(cacheKey, request);
+  try {
+    const result = await request;
+    if (useCache && result.status === "AVAILABLE") {
+      deliveryCheckCache.set(cacheKey, { expiresAt: currentTime + (input.cacheTtlMs ?? deliveryCheckCacheTtlMs), result });
+    } else if (useCache && result.status === "RATE_LIMITED") {
+      deliveryCheckCooldowns.set(cacheKey, currentTime + (result.retryAfterSeconds ?? deliveryCheckDefaultCooldownMs / 1_000) * 1_000);
+    }
+    return result;
+  } finally {
+    if (useCache) deliveryChecksInFlight.delete(cacheKey);
+  }
+}
+
+async function runCjVariantDeliveryCheck(input: { client: CjOrderClient; supplierProductId?: string; supplierVariantId: string; checkedAt: string }): Promise<CjVariantDeliveryCheck> {
+  const { client, supplierVariantId, checkedAt } = input;
   try {
     const variant = await fetchFreshVariant(client, supplierVariantId);
+    if (input.supplierProductId && variant.supplierProductId !== input.supplierProductId) {
+      throw new CjOrderError("CJ_LOGISTICS_VARIANT_INVALID", "The selected VID does not belong to the selected CJ product.");
+    }
     const { options, diagnostics, diagnosticReasons } = await fetchCjFreightTrialOptions({
       client,
       destinationCountryCode: "ZA",
@@ -763,28 +837,43 @@ export async function checkCjVariantDeliveryToSouthAfrica(input: {
         : diagnostics,
     };
   } catch (error) {
-    if (!(error instanceof CjOrderError)) throw error;
-    const status = deliveryCheckStatusFromError(error);
+    const normalizedError = error instanceof CjApiError
+      ? error.code === "CJ_RATE_LIMITED"
+        ? new CjOrderError("CJ_LOGISTICS_RATE_LIMITED", "CJ delivery checks are rate limited.", error.retryAfterMs)
+        : new CjOrderError("CJ_LOGISTICS_TEMPORARY_ERROR", "CJ delivery service is temporarily unavailable.")
+      : error;
+    if (!(normalizedError instanceof CjOrderError)) throw normalizedError;
+    const status = deliveryCheckStatusFromError(normalizedError);
+    const retryAfterSeconds = status === "RATE_LIMITED"
+      ? Math.max(1, Math.ceil((normalizedError.retryAfterMs ?? deliveryCheckDefaultCooldownMs) / 1_000))
+      : undefined;
     return {
       supplierVariantId,
       destinationCountryCode: "ZA",
       quantity: 1,
       status,
       checkedAt,
+      retryAfterSeconds,
       message: deliveryCheckMessage(status),
       sourceCountries: [],
       logisticsOptions: [],
-      diagnosticReasons: [error.message],
+      diagnosticReasons: status === "RATE_LIMITED" || status === "TEMPORARY_ERROR" ? undefined : [normalizedError.message],
       diagnostics: {
         destinationCountryCode: "ZA",
         postalCodePresent: false,
         itemCount: 1,
         variants: [{ vid: supplierVariantId, quantity: 1 }],
-        responseMessage: error.message,
+        responseMessage: normalizedError.message,
         responseShape: "error",
       },
     };
   }
+}
+
+export function resetCjDeliveryCheckCacheForTests() {
+  deliveryCheckCache.clear();
+  deliveryCheckCooldowns.clear();
+  deliveryChecksInFlight.clear();
 }
 
 function createPayload(order: BackendOrder, supplierOrder: SupplierOrder, shipping: CjShippingAddress, lines: CjOrderLinePreview[], selectedLogistics: CjLogisticsOption, recipientValidation?: CjRecipientValidation): CjCreateOrderV2Payload {

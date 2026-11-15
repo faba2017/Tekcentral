@@ -1,0 +1,47 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chdir, cwd } from "node:process";
+import { getSettingsDomain, getSettingsHistory, patchSettingsDomain, SettingsConflictError, validateScoopFeedUrl } from "../businessSettingsRepository.js";
+import { deriveSyntechIntegrationState, getIntegrationHistory, getIntegrationsAdminView, testIntegration } from "../integrationAdminService.js";
+import { SyntechFeedError } from "../suppliers/syntech/syntechCatalogueAdapter.js";
+
+const originalCwd = cwd(); const temporary = await mkdtemp(join(tmpdir(), "tekcentral-integrations-test-")); chdir(temporary);
+try {
+  assert.equal(validateScoopFeedUrl("https://scoop.co.za/scoop_pricelist.xml"), "https://scoop.co.za/scoop_pricelist.xml");
+  for (const unsafe of ["http://scoop.co.za/feed.xml", "https://localhost/feed.xml", "https://127.0.0.1/feed.xml", "https://10.0.0.1/feed.xml", "https://scoop.co.za.evil.example/feed.xml", "https://user:secret@scoop.co.za/feed.xml"]) assert.throws(() => validateScoopFeedUrl(unsafe));
+  process.env.CJ_API_KEY = "integration-secret-value"; process.env.SMTP_PASSWORD = "smtp-secret-value"; process.env.SMTP_HOST = "smtp.example.com"; process.env.SMTP_PORT = "465";
+  const settings = await getSettingsDomain("integrations");
+  assert.equal(settings.settings.find((item) => item.key === "scoopFeedUrl")?.capability, "EDITABLE");
+  assert.equal(settings.settings.find((item) => item.key === "cjCredential")?.capability, "SECRET");
+  assert.equal(settings.settings.find((item) => item.key === "smtpHost")?.capability, "ENVIRONMENT_MANAGED");
+  assert.equal(JSON.stringify(settings).includes("integration-secret-value"), false); assert.equal(JSON.stringify(settings).includes("smtp-secret-value"), false);
+  await assert.rejects(patchSettingsDomain("integrations", { revision: 0, changes: { scoopFeedUrl: "https://scoop.co.za/alternate.xml" } }), /explicit confirmation/);
+  const saved = await patchSettingsDomain("integrations", { revision: 0, changes: { scoopFeedUrl: "https://scoop.co.za/alternate.xml" }, confirmHighRisk: true }, "Integration Policy Test");
+  assert.equal(saved.revision, 1); assert.equal((await getSettingsHistory("integrations")).history[0].newValue, "https://scoop.co.za/alternate.xml");
+  await assert.rejects(patchSettingsDomain("integrations", { revision: 0, changes: { scoopFeedUrl: "https://scoop.co.za/old.xml" }, confirmHighRisk: true }), SettingsConflictError);
+  assert.equal((await testIntegration("CJ", { cjTest: async () => ({ supplier: "CJ", configured: true, authenticated: true, lastError: null, importedProductsCount: 1, verifiedMappingsCount: 1, suggestedMappingsCount: 0, staleMappingsCount: 0 }) })).status, "PASSED");
+  assert.equal((await testIntegration("SCOOP", { scoopTest: async () => ({ products: [{}] as never[], xmlRootTag: "SHOP", xmlItemTag: "PRODUCT" }) })).details?.productCount, 1);
+  const historicalFailure = { integration: "SYNTECH" as const, status: "FAILED" as const, testedAt: "2026-10-15T15:16:58.519Z", summary: "SYNTECH is not configured.", category: "NOT_CONFIGURED" };
+  const syntechState = deriveSyntechIntegrationState({ enabled: true, configured: true, fullConfigured: true, updateConfigured: true, format: "JSON" }, historicalFailure);
+  assert.equal(syntechState.configurationStatus, "CONFIGURED"); assert.equal(syntechState.lastTest?.status, "FAILED"); assert.equal(syntechState.configuration.fullConfigured, true); assert.equal(JSON.stringify(syntechState).includes("https://"), false);
+  const integrationsPage = readFileSync(join(originalCwd, "src/pages/admin/AdminIntegrationsSettingsPage.tsx"), "utf8");
+  assert.equal(integrationsPage.includes("Current configuration"), true); assert.equal(integrationsPage.includes("Current health"), true); assert.equal(integrationsPage.includes("Last test:"), true);
+  delete process.env.SYNTECH_ENABLED; delete process.env.SYNTECH_FULL_FEED_URL; delete process.env.SYNTECH_UPDATE_FEED_URL;
+  const notConfigured = await testIntegration("SYNTECH"); assert.equal(notConfigured.category, "NOT_CONFIGURED");
+  process.env.SYNTECH_ENABLED = "true"; process.env.SYNTECH_FULL_FEED_URL = "https://secret.example.test/full?key=hidden"; process.env.SYNTECH_UPDATE_FEED_URL = "https://secret.example.test/update?key=hidden";
+  const configuredView = (await getIntegrationsAdminView()).integrations.find((item) => item.id === "SYNTECH")!;
+  assert.equal(configuredView.configurationStatus, "CONFIGURED"); assert.equal(configuredView.lastTest?.category, "NOT_CONFIGURED"); assert.equal(JSON.stringify(configuredView).includes("secret.example.test"), false);
+  const rateLimited = await testIntegration("SYNTECH", { syntechTest: async () => { throw new SyntechFeedError("RATE_LIMITED", "Supplier throttled."); } }); assert.equal(rateLimited.category, "RATE_LIMITED");
+  const blocked = await testIntegration("SYNTECH", { syntechTest: async () => { throw new SyntechFeedError("ACCOUNT_BLOCKED", "Supplier blocked."); } }); assert.equal(blocked.category, "ACCOUNT_BLOCKED");
+  let syntechFetches = 0;
+  const syntechTest = await testIntegration("SYNTECH", { syntechFetchImpl: async () => { syntechFetches += 1; return new Response(JSON.stringify({ syntechstock: { count: 1, currency: "ZAR", products: [{ sku: "TEST-SKU", price: "100", cptstock: "1", jhbstock: "0", dbnstock: "0" }] } }), { status: 200 }); } });
+  assert.equal(syntechFetches, 1); assert.equal(syntechTest.status, "PASSED"); assert.equal(syntechTest.details?.parsedCount, 1); assert.equal((await getIntegrationHistory()).find((item) => item.integration === "SYNTECH")?.status, "PASSED");
+  let smtpMessages = 0; assert.equal((await testIntegration("SMTP", { smtpRecipient: "reports@example.com", smtpVerify: async () => undefined, smtpSend: async (message) => { smtpMessages += 1; assert.equal(message.to, "reports@example.com"); } })).status, "PASSED"); assert.equal(smtpMessages, 1);
+  assert.equal((await testIntegration("FX", { fxProvider: { getRate: async () => ({ sourceCurrency: "USD", targetCurrency: "ZAR", rate: 18.5, provider: "FRANKFURTER_ECB", effectiveAt: "2026-10-13T00:00:00.000Z", fetchedAt: "2026-10-14T00:00:00.000Z", sourceReference: "https://api.frankfurter.dev/test" }) } })).status, "PASSED");
+  const failed = await testIntegration("SCOOP", { scoopTest: async () => { throw new Error("raw token=secret HTTP 429"); } }); assert.equal(failed.category, "RATE_LIMITED"); assert.equal(JSON.stringify(failed).includes("secret"), false);
+  assert.equal((await getIntegrationHistory()).length, 5);
+  console.log("Integration administration tests passed.");
+} finally { chdir(originalCwd); await rm(temporary, { recursive: true, force: true }); delete process.env.CJ_API_KEY; delete process.env.SMTP_PASSWORD; delete process.env.SMTP_HOST; delete process.env.SMTP_PORT; delete process.env.SYNTECH_ENABLED; delete process.env.SYNTECH_FULL_FEED_URL; delete process.env.SYNTECH_UPDATE_FEED_URL; }

@@ -1,4 +1,5 @@
 import { products } from "../../../src/data/catalogue.js";
+import { createHash } from "node:crypto";
 import {
   getSupplierProductMappingById,
   listSupplierProductMappings,
@@ -17,8 +18,8 @@ import {
   enrichCjProductCategory,
   technologyPolicyResponse,
 } from "./cjCataloguePolicy.js";
-import { getCjCatalogueProduct, listCjCatalogueProducts, saveCjCatalogueProduct } from "./cjCatalogueRepository.js";
-import { extractProductList, normalizeCjCategories, normalizeCjProduct, normalizeCjStock, normalizeCjVariant } from "./cjProductMapper.js";
+import { getCjCatalogueProduct, listCjCatalogueProducts, saveCjCatalogueProduct, updateCjCatalogueVariant } from "./cjCatalogueRepository.js";
+import { applyCjProductDetailPricing, extractProductList, normalizeCjCategories, normalizeCjProduct, normalizeCjStock, normalizeCjVariant } from "./cjProductMapper.js";
 import type { CjProductLookup, CjSearchParams } from "./cjTypes.js";
 
 const authService = new CjAuthService();
@@ -268,13 +269,15 @@ export async function getCjProductDetail(lookup: CjProductLookup, requestClient:
     { pid: product.supplierProductId || lookup.pid, productSku: product.supplierSku ?? lookup.productSku, variantSku: lookup.variantSku },
     requestClient,
   );
+  const fullDetail = await requestClient.request<unknown>("/product/productDetail/query", { method: "POST", body: { id: product.supplierProductId } }).catch(() => undefined);
+  const pricedVariants = fullDetail?.data ? applyCjProductDetailPricing(variants, fullDetail.data) : variants;
   const detailProduct = categoryLookup
-    ? enrichCjProductCategory(normalizeCjProduct(response.data, variants), categoryLookup)
-    : normalizeCjProduct(response.data, variants);
+    ? enrichCjProductCategory(normalizeCjProduct(response.data, pricedVariants), categoryLookup)
+    : normalizeCjProduct(response.data, pricedVariants);
   return {
     requestId: response.requestId,
     product: annotateTechnologyProduct(detailProduct),
-    variants,
+    variants: pricedVariants,
   };
 }
 
@@ -308,11 +311,65 @@ export async function getCjVariantByVid(vid: string, requestClient: CjCatalogueC
   return normalizeCjVariant(response.data);
 }
 
+export async function refreshCjVariantSourcePrice(input: { supplierProductId: string; supplierVariantId: string; supplierVariantSku?: string }, requestClient: CjCatalogueClient = client) {
+  const existing = await getCjCatalogueProduct(input.supplierProductId);
+  const existingVariant = existing?.variants.find((variant) => variant.supplierVariantId === input.supplierVariantId);
+  if (!existing || !existingVariant) throw new CjApiError("CJ_PRODUCT_NOT_FOUND", "Imported CJ product or exact variant not found.");
+  if (existingVariant.costEvidence?.classification === "PROCUREMENT_COST") throw new CjApiError("CJ_INVALID_RESPONSE", "Manual procurement evidence cannot be refreshed from the CJ API.");
+  const expectedSku = input.supplierVariantSku ?? existingVariant.supplierVariantSku;
+  const identity = await getCjVariantByVid(input.supplierVariantId, requestClient);
+  if (identity.supplierProductId && identity.supplierProductId !== input.supplierProductId) throw new CjApiError("CJ_INVALID_RESPONSE", "CJ returned a different parent product for the selected variant.");
+  if (expectedSku && identity.supplierVariantSku !== expectedSku) throw new CjApiError("CJ_INVALID_RESPONSE", "CJ returned a different SKU for the selected variant.");
+  const response = await requestClient.request<unknown>("/product/productDetail/query", { method: "POST", body: { id: input.supplierProductId } });
+  const refreshedVariant = applyCjProductDetailPricing([existingVariant], response.data)[0];
+  if (!refreshedVariant?.costEvidence || refreshedVariant === existingVariant) throw new CjApiError("CJ_INVALID_RESPONSE", "CJ did not return authoritative pricing for the selected variant.", response.requestId);
+  const previousCostEvidence = existingVariant.costEvidence;
+  const product = await updateCjCatalogueVariant(input.supplierProductId, input.supplierVariantId, (variant) => ({
+    ...variant,
+    price: refreshedVariant.price,
+    currency: refreshedVariant.currency,
+    currencyEvidence: refreshedVariant.currencyEvidence,
+    costEvidence: refreshedVariant.costEvidence,
+    costEvidenceHistory: previousCostEvidence
+      ? [...(variant.costEvidenceHistory ?? []), previousCostEvidence].filter((entry, index, rows) => rows.findIndex((candidate) => candidate.capturedAt === entry.capturedAt && candidate.sourceFingerprint === entry.sourceFingerprint) === index).slice(-25)
+      : variant.costEvidenceHistory,
+  }));
+  return { product: product!, variant: product!.variants.find((variant) => variant.supplierVariantId === input.supplierVariantId)!, previousCostEvidence, requestId: response.requestId };
+}
+
 export async function getCjStockByVid(vid: string) {
   const response = await client.request<unknown[]>("/product/stock/queryByVid", {
     query: { vid },
   });
   return normalizeCjStock(response.data);
+}
+
+export async function refreshCjVariantAvailability(input: { supplierProductId: string; supplierVariantId: string; supplierVariantSku?: string }, requestClient: CjCatalogueClient = client) {
+  const existing = await getCjCatalogueProduct(input.supplierProductId);
+  const existingVariant = existing?.variants.find((variant) => variant.supplierVariantId === input.supplierVariantId);
+  if (!existing || !existingVariant) throw new CjApiError("CJ_PRODUCT_NOT_FOUND", "Imported CJ product or exact variant not found.");
+  const expectedSku = input.supplierVariantSku ?? existingVariant.supplierVariantSku;
+  const identity = await getCjVariantByVid(input.supplierVariantId, requestClient);
+  if (identity.supplierVariantId !== input.supplierVariantId || (identity.supplierProductId && identity.supplierProductId !== input.supplierProductId)) {
+    throw new CjApiError("CJ_INVALID_RESPONSE", "CJ returned a different product or variant identity.");
+  }
+  if (expectedSku && identity.supplierVariantSku !== expectedSku) throw new CjApiError("CJ_INVALID_RESPONSE", "CJ returned a different SKU for the selected variant.");
+  const response = await requestClient.request<unknown[]>("/product/stock/queryByVid", { query: { vid: input.supplierVariantId } });
+  const stock = normalizeCjStock(response.data);
+  const resolvedStock = stock.stockByWarehouse.length > 0 ? stock : { stockTotal: identity.stockTotal, stockByWarehouse: identity.stockByWarehouse };
+  const observedAt = new Date().toISOString();
+  const sourceFingerprint = createHash("sha256").update(JSON.stringify(response.data ?? null)).digest("hex");
+  const fields = Array.from(new Set((Array.isArray(response.data) ? response.data : []).flatMap((row) => row && typeof row === "object" ? Object.keys(row) : []))).sort();
+  const product = await updateCjCatalogueVariant(input.supplierProductId, input.supplierVariantId, (variant) => ({
+    ...variant,
+    stockTotal: resolvedStock.stockTotal,
+    stockByWarehouse: resolvedStock.stockByWarehouse,
+    stockEvidence: { observedAt, source: "CJ_STOCK_BY_VID", sourceFingerprint, endpoint: "/product/stock/queryByVid", fields },
+    evidenceHistory: [...(variant.evidenceHistory ?? []), { endpoint: "/product/stock/queryByVid", capturedAt: observedAt, sourceFingerprint, fields }],
+  }));
+  if (!product) throw new CjApiError("CJ_PRODUCT_NOT_FOUND", "Imported CJ product or exact variant not found.");
+  const refreshed = await saveCjCatalogueProduct({ ...product, lastFetchedAt: observedAt, lastSuccessfulRefreshAt: observedAt });
+  return { product: refreshed, variant: refreshed.variants.find((variant) => variant.supplierVariantId === input.supplierVariantId)!, requestId: response.requestId };
 }
 
 export async function importCjProduct(lookup: CjProductLookup) {
@@ -326,10 +383,25 @@ export async function importCjProduct(lookup: CjProductLookup) {
   return product;
 }
 
-export async function refreshCjProduct(supplierProductId: string) {
+export async function refreshCjProduct(supplierProductId: string, requestClient: CjCatalogueClient = client) {
   const existing = await getCjCatalogueProduct(supplierProductId);
   if (!existing) throw new CjApiError("CJ_PRODUCT_NOT_FOUND", "Imported CJ product not found.");
-  return importCjProduct({ pid: existing.supplierProductId });
+  const detail = await getCjProductDetail({ pid: existing.supplierProductId }, requestClient);
+  return saveCjCatalogueProduct({ ...detail.product, importedAt: existing.importedAt, lastFetchedAt: new Date().toISOString(), lastSuccessfulRefreshAt: new Date().toISOString() });
+}
+
+export async function refreshCjEvidenceCohort(requestClient: CjCatalogueClient = client) {
+  const products = await listCjCatalogueProducts();
+  const results: { supplierProductId: string; status: "REFRESHED" | "FAILED"; refreshedAt?: string; error?: string }[] = [];
+  for (const product of products) {
+    try {
+      const refreshed = await refreshCjProduct(product.supplierProductId, requestClient);
+      results.push({ supplierProductId: product.supplierProductId, status: "REFRESHED", refreshedAt: refreshed.lastSuccessfulRefreshAt });
+    } catch (error) {
+      results.push({ supplierProductId: product.supplierProductId, status: "FAILED", error: error instanceof CjApiError ? error.code : "CJ_API_UNAVAILABLE" });
+    }
+  }
+  return { controlledProducts: products.length, refreshed: results.filter((item) => item.status === "REFRESHED").length, failed: results.filter((item) => item.status === "FAILED").length, results };
 }
 
 function normalizeMatch(value?: string) {

@@ -1,56 +1,8 @@
 import type { Category, Product } from "../types/product.js";
+import { productTaxonomy } from "../lib/product-taxonomy.js";
 
-export const categories: Category[] = [
-  {
-    slug: "computers",
-    name: "Computers",
-    description: "Laptops, desktops, mini PCs, monitors and docking stations.",
-    accent: "bg-sky-100 text-sky-900",
-    subcategories: ["Laptops", "Desktops", "Mini PCs", "Monitors", "Docks"],
-  },
-  {
-    slug: "networking",
-    name: "Networking",
-    description: "Routers, switches, access points, PoE, racks and cabling.",
-    accent: "bg-emerald-100 text-emerald-900",
-    subcategories: ["Routers", "Switches", "Wi-Fi", "PoE", "Cabling"],
-  },
-  {
-    slug: "printing-office",
-    name: "Printing & Office",
-    description: "Printers, scanners, projectors and office technology.",
-    accent: "bg-amber-100 text-amber-950",
-    subcategories: ["Printers", "Scanners", "Projectors", "POS"],
-  },
-  {
-    slug: "security",
-    name: "Security",
-    description: "IP cameras, CCTV, NVRs, access control and sensors.",
-    accent: "bg-rose-100 text-rose-950",
-    subcategories: ["Cameras", "NVR", "Access Control", "Sensors"],
-  },
-  {
-    slug: "power",
-    name: "Power",
-    description: "UPS systems, surge protection and backup power equipment.",
-    accent: "bg-lime-100 text-lime-950",
-    subcategories: ["UPS", "Surge Protection", "Backup Power"],
-  },
-  {
-    slug: "smart-tech",
-    name: "Smart Tech",
-    description: "IoT, AI-enabled devices, automation and smart displays.",
-    accent: "bg-violet-100 text-violet-950",
-    subcategories: ["IoT", "Smart Office", "Displays", "Automation"],
-  },
-  {
-    slug: "accessories",
-    name: "Accessories",
-    description: "Keyboards, mice, webcams, headsets, storage and adapters.",
-    accent: "bg-zinc-200 text-zinc-950",
-    subcategories: ["Input", "Webcams", "Audio", "Storage", "Adapters"],
-  },
-];
+const accents = ["bg-sky-100 text-sky-900", "bg-emerald-100 text-emerald-900", "bg-rose-100 text-rose-950", "bg-violet-100 text-violet-950"];
+export const categories: Category[] = productTaxonomy.map((item, index) => ({ id: item.id, slug: item.slug, name: item.label, description: item.description, accent: accents[index % accents.length], subcategories: item.children.map((child) => child.label) }));
 
 const product = (item: Product): Product => item;
 

@@ -17,7 +17,7 @@ export function ScoopProductCreationPanel({ supplierSku, hasVerifiedMapping, ope
   useEffect(() => {
     let active = true;
     apiRequest<ScoopProductCreationPreview>(`/api/admin/suppliers/scoop/products/${encodeURIComponent(supplierSku)}/product-creation-preview`)
-      .then((result) => { if (!active) return; setPreview(result); setName(result.titleSuggestions[0] ?? result.offer.description); setCategorySlug(result.categorySuggestion.slug); setSubcategory(result.categorySuggestion.subcategories[0] ?? ""); })
+      .then((result) => { if (!active) return; setPreview(result); setName(result.titleSuggestions[0] ?? result.offer.description); setCategorySlug(result.categorySuggestion.slug); setSubcategory(result.categorySuggestion.suggestedSubcategory ?? ""); })
       .catch(() => { if (active) setFeedback({ variant: "error", message: "Product creation preview could not be loaded." }); });
     return () => { active = false; };
   }, [supplierSku]);
@@ -43,6 +43,7 @@ export function ScoopProductCreationPanel({ supplierSku, hasVerifiedMapping, ope
       <div className="mt-4 grid gap-4">
         <label className="text-sm font-black">Product title<input value={name} onChange={(event) => setName(event.target.value)} className="mt-2 h-10 w-full rounded-md border border-[#E4E7EC] bg-white px-3 text-sm" /></label>
         <div><p className="text-sm font-black">Title suggestions</p><div className="mt-2 grid gap-2 sm:grid-cols-2">{preview.titleSuggestions.map((title) => <button key={title} type="button" onClick={() => setName(title)} className={`min-h-9 rounded-md border px-2 py-1.5 text-left text-xs font-semibold leading-4 ${name === title ? "border-[#469D8B] bg-[#E8F4F1] text-[#176B5C]" : "border-[#E4E7EC] bg-white"}`}>{title}</button>)}</div></div>
+        <div className="rounded-md border border-[#B9E2DB] bg-white p-3"><p className="text-xs font-black uppercase text-[#176B5C]">Canonical category suggestion</p><p className="mt-1 text-sm font-black">{preview.categorySuggestion.name}{preview.categorySuggestion.suggestedSubcategory ? ` → ${preview.categorySuggestion.suggestedSubcategory}` : ""}</p><p className="mt-1 text-xs font-semibold text-[#667085]">{preview.categorySuggestion.confidence} confidence · {preview.categorySuggestion.evidence.join(" ")}</p><p className="mt-2 text-xs text-[#667085]">Review or override the suggestion below. Supplier taxonomy is evidence only.</p></div>
         <div className="grid gap-4 sm:grid-cols-2">
         <label className="text-sm font-black">Category<select value={categorySlug} onChange={(event) => { const next = preview.categories.find((item) => item.slug === event.target.value); setCategorySlug(event.target.value); setSubcategory(next?.subcategories[0] ?? ""); }} className="mt-2 h-10 w-full rounded-md border border-[#E4E7EC] bg-white px-3 text-sm">{preview.categories.map((item) => <option key={item.slug} value={item.slug}>{item.name}</option>)}</select></label>
         <label className="text-sm font-black">Subcategory<select value={subcategory} onChange={(event) => setSubcategory(event.target.value)} className="mt-2 h-10 w-full rounded-md border border-[#E4E7EC] bg-white px-3 text-sm">{category?.subcategories.map((item) => <option key={item}>{item}</option>)}</select></label>

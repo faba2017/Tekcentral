@@ -1,0 +1,14 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { objectStorage } from "./storage/objectStorage.js";
+import { SafeRemoteFetchError, safeRemoteFetch } from "./security/safeRemoteFetch.js";
+
+const MAX_BYTES = 10 * 1024 * 1024;
+const directory = () => resolve(process.cwd(), ".data", "public-assets", "documents");
+const pdfMagic = (bytes: Uint8Array) => new TextDecoder().decode(bytes.slice(0, 5)) === "%PDF-";
+const riskyPdfMarker = (bytes: Uint8Array) => /\/(?:JavaScript|JS|Launch|EmbeddedFile)\b/i.test(new TextDecoder("latin1").decode(bytes));
+async function store(bytes: Uint8Array) { if (!bytes.length) throw new Error("DOCUMENT_EMPTY"); if (bytes.length > MAX_BYTES) throw new Error("DOCUMENT_TOO_LARGE"); if (!pdfMagic(bytes) || riskyPdfMarker(bytes)) throw new Error("DOCUMENT_CONTENT_INVALID"); const hash = createHash("sha256").update(bytes).digest("hex"); await objectStorage().storeObject({ key: `documents/${hash}.pdf`, access: "PUBLIC", bytes, contentType: "application/pdf", expectedHash: hash }); return { publicUrl: `/api/public/assets/documents/${hash}.pdf`, contentHash: hash, mimeType: "application/pdf", bytes: bytes.length }; }
+export async function uploadPublicDocument(input: { filename: string; mimeType: string; base64: string }) { if (input.mimeType !== "application/pdf" || !input.filename.toLowerCase().endsWith(".pdf")) throw new Error("DOCUMENT_TYPE_UNSUPPORTED"); return store(Uint8Array.from(Buffer.from(input.base64, "base64"))); }
+export async function importPublicDocument(input: { sourceUrl: string; trustedHosts: string[] }, fetcher: typeof fetch = fetch) { const injectedFetcher = fetcher === fetch ? undefined : fetcher; try { const loaded = await safeRemoteFetch(input.sourceUrl, { allowedHosts: input.trustedHosts, allowedContentTypes: ["application/pdf"], fetcher: injectedFetcher, resolver: injectedFetcher ? async () => ["8.8.8.8"] : undefined, headers: { Accept: "application/pdf" }, maxBytes: MAX_BYTES, maxRedirects: 4 }); return store(loaded.bytes); } catch (error) { if (error instanceof SafeRemoteFetchError && error.code === "REMOTE_CONTENT_TYPE_UNSUPPORTED") throw new Error("DOCUMENT_TYPE_UNSUPPORTED", { cause: error }); if (error instanceof SafeRemoteFetchError && error.code === "REMOTE_RESPONSE_TOO_LARGE") throw new Error("DOCUMENT_TOO_LARGE", { cause: error }); if (error instanceof SafeRemoteFetchError && error.code === "REMOTE_SOURCE_NOT_ALLOWED") throw new Error("DOCUMENT_SOURCE_UNTRUSTED", { cause: error }); throw error; } }
+export async function readPublicDocument(filename: string) { if (!/^[a-f0-9]{64}\.pdf$/.test(filename)) return undefined; const durable = await objectStorage().readObject(`documents/${filename}`, "PUBLIC"); if (durable) return Buffer.from(durable); try { return await readFile(resolve(directory(), filename)); } catch { return undefined; } }

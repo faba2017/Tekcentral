@@ -12,8 +12,23 @@ export type SupplierCapabilitySupport = "SUPPORTED" | "MANUAL" | "UNSUPPORTED" |
 
 export type SupplierCapability =
   | "catalogue"
+  | "productDetail"
+  | "variantDetail"
   | "stock"
+  | "warehouseStock"
   | "pricing"
+  | "logistics"
+  | "productImages"
+  | "productContent"
+  | "productAttributes"
+  | "dealerPricing"
+  | "promotions"
+  | "branchStock"
+  | "shipmentEta"
+  | "categoryEvidence"
+  | "evidence"
+  | "syncHistory"
+  | "health"
   | "productMapping"
   | "orderCreate"
   | "orderSubmitEmail"
@@ -31,18 +46,26 @@ export type SupplierCapabilityMap = Record<SupplierCapability, SupplierCapabilit
 export interface SupplierRegistryEntry {
   id: SupplierCode;
   displayName: string;
+  description?: string;
   enabled: boolean;
   supportedOrderModes: NormalizedSupplierOrderMode[];
   defaultOrderMode: NormalizedSupplierOrderMode;
   capabilities: SupplierCapabilityMap;
   adapterAvailable: boolean;
+  configurationSource?: "ENVIRONMENT" | "FEED" | "INTERNAL";
   manualProcurementUrl?: string;
   operationalChannel?: string;
+  procurement: {
+    mode: "API_SUPPORTED" | "MANUAL_SUPPORTED" | "INTERNAL_SUPPORTED" | "UNSUPPORTED";
+    operationallyAccepted: boolean;
+    automatic: boolean;
+    description: string;
+  };
 }
 
 export interface SupplierOffer {
   id: string;
-  tekcentralProductId: string;
+  tekcentralProductId?: string;
   supplierId: SupplierCode;
   supplierProductId?: string;
   supplierVariantId?: string;
@@ -94,8 +117,23 @@ export interface SupplierAdapterContract {
 
 const allCapabilities: SupplierCapability[] = [
   "catalogue",
+  "productDetail",
+  "variantDetail",
   "stock",
+  "warehouseStock",
   "pricing",
+  "logistics",
+  "productImages",
+  "productContent",
+  "productAttributes",
+  "dealerPricing",
+  "promotions",
+  "branchStock",
+  "shipmentEta",
+  "categoryEvidence",
+  "evidence",
+  "syncHistory",
+  "health",
   "productMapping",
   "orderCreate",
   "orderSubmitEmail",

@@ -5,6 +5,7 @@ import { formatCurrency } from "@/lib/format";
 import { useCart } from "@/state/cart";
 import { usePageTitle } from "@/lib/page-title";
 import { ProductVisual } from "@/components/commerce/ProductVisual";
+import { productAvailability } from "@/lib/product-availability";
 
 export function CartPage() {
   const { products } = useStorefrontCatalogue();
@@ -16,6 +17,7 @@ export function CartPage() {
       product: products.find((product) => product.id === line.productId),
     }))
     .filter((item) => item.product);
+  const unavailableItems = items.filter(({ product }) => product && !productAvailability(product).purchasable);
 
   return (
     <section className="bg-white px-4 py-12 sm:px-6 lg:px-8">
@@ -72,6 +74,9 @@ export function CartPage() {
                       <p className="mt-3 text-sm text-[#3F4652]">
                         {formatCurrency(product.price, product.currency)} each
                       </p>
+                      <p className="mt-1 text-sm font-semibold text-[#667085]">
+                        {productAvailability(product).label}
+                      </p>
                       <p className="mt-1 text-sm font-black text-[#0A0A0A]">
                         Line total:{" "}
                         {formatCurrency(product.price * line.quantity, product.currency)}
@@ -123,12 +128,18 @@ export function CartPage() {
               <p className="mt-3 text-xs leading-5 text-[#727986]">
                 VAT and delivery options are confirmed during checkout.
               </p>
-              <Link
-                to="/checkout"
-                className="mt-5 block rounded-md bg-[var(--tek-accent)] px-5 py-3 text-center text-sm font-black text-[var(--tek-accent-ink)] transition hover:bg-[var(--tek-accent-hover)]"
-              >
-                Continue to Checkout
-              </Link>
+              {unavailableItems.length > 0 ? (
+                <div className="mt-5 rounded-md border border-[#FEC84B] bg-[#FFFAEB] p-3 text-sm font-semibold text-[#7A2E0E]">
+                  Review unavailable items before continuing to checkout.
+                </div>
+              ) : (
+                <Link
+                  to="/checkout"
+                  className="mt-5 block rounded-md bg-[var(--tek-accent)] px-5 py-3 text-center text-sm font-black text-[var(--tek-accent-ink)] transition hover:bg-[var(--tek-accent-hover)]"
+                >
+                  Continue to Checkout
+                </Link>
+              )}
               <Link
                 to="/business"
                 className="mt-3 block rounded-md border border-[#E4E7EC] bg-white px-5 py-3 text-center text-sm font-black text-[#0A0A0A] transition hover:border-[#0A0A0A]"

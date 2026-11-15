@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { AdminPageHeader, AdminShell, AdminStatusBadge } from "@/components/admin/AdminShell";
+import { AdminPagination } from "@/components/admin/AdminTable";
+import { normalizeAdminPagination } from "@/lib/admin-table";
 import { apiRequest } from "@/lib/api";
 import { supplierOrderStatusLabels } from "@/lib/order-status";
 import { usePageTitle } from "@/lib/page-title";
@@ -36,8 +38,11 @@ export function AdminSupplierOrdersPage() {
   usePageTitle("Supplier orders | TekCentral");
   const [supplierOrders, setSupplierOrders] = useState<SupplierOrder[]>([]);
   const [attention, setAttention] = useState<AdminSupplierOrdersResponse["attention"]>([]);
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<"ALL" | SupplierOrderStatus>("ALL");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = searchParams.get("search") ?? "";
+  const filter = (searchParams.get("status") ?? "ALL") as "ALL" | SupplierOrderStatus;
+  const supplierFilter = searchParams.get("supplier")?.toUpperCase();
+  const updateParams = (values: Record<string, string | undefined>, resetPage = false) => setSearchParams((current) => { const next = new URLSearchParams(current); Object.entries(values).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key)); if (resetPage) next.set("page", "1"); return next; }, { replace: true });
 
   useEffect(() => {
     apiRequest<AdminSupplierOrdersResponse>("/api/admin/supplier-orders")
@@ -55,29 +60,32 @@ export function AdminSupplierOrdersPage() {
     const search = query.trim().toLowerCase();
     return supplierOrders.filter((supplierOrder) => {
       const matchesFilter = filter === "ALL" || supplierOrder.status === filter;
+      const matchesSupplier = !supplierFilter || supplierOrder.supplierCode === supplierFilter;
       const matchesSearch =
         !search ||
         supplierOrder.id.toLowerCase().includes(search) ||
         supplierOrder.customerOrderNumber.toLowerCase().includes(search) ||
         supplierOrder.supplierName.toLowerCase().includes(search) ||
         (supplierOrder.supplierOrderReference ?? "").toLowerCase().includes(search);
-      return matchesFilter && matchesSearch;
+      return matchesFilter && matchesSupplier && matchesSearch;
     });
-  }, [filter, query, supplierOrders]);
+  }, [filter, query, supplierFilter, supplierOrders]);
+  const pagination = normalizeAdminPagination(Number(searchParams.get("page") ?? 1), Number(searchParams.get("pageSize") ?? 15), visibleSupplierOrders.length);
+  const pagedSupplierOrders = visibleSupplierOrders.slice((pagination.page - 1) * pagination.pageSize, pagination.page * pagination.pageSize);
 
   return (
     <AdminShell>
       <AdminPageHeader
-        eyebrow="Mock supplier orchestration"
-        title="Supplier orders"
-        description="Internal mock supplier orders generated from staff allocations. No external supplier request is sent."
+        eyebrow={supplierFilter ? `Suppliers / ${supplierFilter}` : "Procurement"}
+        title={supplierFilter ? `${supplierFilter} supplier orders` : "Supplier orders"}
+        description="Cross-supplier procurement work generated from approved staff allocations. Supplier-specific capabilities and protections remain in force."
       />
       <div className="mt-6 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <label className="block max-w-sm text-sm font-black">
           Search
           <input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => updateParams({ search: event.target.value || undefined }, true)}
             className="mt-2 h-11 w-full rounded-md border border-[#E4E7EC] bg-white px-3 text-sm font-semibold outline-none focus:border-[var(--tek-accent)]"
             placeholder="Supplier order, customer order, supplier or ref"
           />
@@ -87,7 +95,7 @@ export function AdminSupplierOrdersPage() {
             <button
               key={item.value}
               type="button"
-              onClick={() => setFilter(item.value)}
+              onClick={() => updateParams({ status: item.value === "ALL" ? undefined : item.value }, true)}
               className={`rounded-md border px-3 py-2 text-xs font-black ${
                 filter === item.value
                   ? "border-[var(--tek-accent)] bg-[var(--tek-accent)] text-[var(--tek-accent-ink)]"
@@ -112,7 +120,7 @@ export function AdminSupplierOrdersPage() {
           <span>Action</span>
         </div>
         <div className="divide-y divide-[#E4E7EC]">
-          {visibleSupplierOrders.map((supplierOrder) => {
+          {pagedSupplierOrders.map((supplierOrder) => {
             const reasons: AttentionReason[] = supplierOrderAttention(attention, supplierOrder.id);
             return (
               <article
@@ -171,6 +179,7 @@ export function AdminSupplierOrdersPage() {
             </p>
           )}
         </div>
+        <AdminPagination meta={pagination} noun="supplier orders" onPageChange={(page) => updateParams({ page: String(page) })} onPageSizeChange={(pageSize) => updateParams({ pageSize: String(pageSize) }, true)} />
       </section>
     </AdminShell>
   );

@@ -23,6 +23,17 @@
   does not change payment, order or fulfilment status. It never runs
   automatically.
 - Operational holds are separate from customer-facing order status.
+- Payment, customer-order status and SupplierOrder status remain independent.
+- Order detail uses supplier-neutral payment, allocation, procurement, supplier
+  reference, fulfilment and tracking stages.
+- Persisted allocations are authoritative and normal allocation editing locks
+  once supplier procurement reaches approval or a later material state.
+- A customer order cannot move to shipped without recorded courier, tracking,
+  dispatch or shipment evidence.
+- Holds pause TekCentral progression only; they do not cancel external supplier
+  or courier work. Supplier/procurement and other/manual holds require notes.
+- Scoop notification diagnostics expose safe SMTP failure categories, recipient,
+  attempt time and retry count without transport secrets.
 - Packing slips are available at `/admin/orders/:orderNumber/packing-slip`.
 
 ## DEMO/INTERNAL WORKFLOW

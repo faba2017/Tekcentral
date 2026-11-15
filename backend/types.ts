@@ -26,6 +26,14 @@ export type PaymentStatus =
 
 export interface PaymentRecord {
   provider: "payfast";
+  gatewayProvider?: "PAYFAST";
+  gatewayInstanceId?: string;
+  gatewayTransactionId?: string;
+  gatewayReference?: string;
+  paymentMethod?: string;
+  amount?: number;
+  currency?: "ZAR";
+  createdAt?: string;
   status: PaymentStatus;
   paymentReference: string;
   payfastPaymentId?: string;
@@ -42,9 +50,48 @@ export interface BackendOrderItem {
   name: string;
   brand: string;
   stockStatus?: string;
+  categoryId?: string;
+  subcategoryId?: string;
+  productTypeId?: string;
+  taxonomyVersion?: 1;
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  costBasis?: OrderLineCostBasis;
+}
+
+export type CostBasisStatus = "COMPLETE" | "PARTIAL" | "UNAVAILABLE";
+export interface OrderLineCostBasis {
+  status: CostBasisStatus;
+  evaluatedAt: string;
+  capturedAt?: string;
+  productId: string;
+  productSku?: string;
+  quantity: number;
+  supplierId?: SupplierCode;
+  supplierOfferId?: string;
+  mappingId?: string;
+  sourceCurrency?: string;
+  sourceUnitCost?: number;
+  fxStatus?: "CAPTURED" | "NOT_REQUIRED";
+  fxPair?: string;
+  fxRate?: number;
+  fxProvider?: string;
+  fxEffectiveAt?: string;
+  normalizedUnitCostZar?: number;
+  normalizedLineCostZar?: number;
+  customerUnitPriceInclVat: number;
+  customerLineTotalInclVat: number;
+  vatRatePercent: number;
+  vatAmount: number;
+  revenueExVat: number;
+  grossProfit?: number;
+  grossMarginPercent?: number;
+  pricingPolicyReference?: string;
+  costEvidenceObservedAt?: string;
+  sourceFingerprint?: string;
+  sourceReference?: string;
+  reason?: string;
 }
 
 export interface OrderShippingQuoteSnapshot {
@@ -112,6 +159,26 @@ export interface BackendReturnRequestItem {
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  inventoryReconciliations?: ReturnInventoryReconciliation[];
+}
+
+export type ReturnInspectionState = "RECEIVED" | "INSPECTING" | "DECISION_REQUIRED" | "RECONCILED";
+export type ReturnInventoryDecision = "RESTOCK_SELLABLE" | "DAMAGED_WRITE_OFF" | "NON_SELLABLE_WRITE_OFF";
+export interface ReturnInventoryReconciliation {
+  id: string;
+  supplierOrderId: string;
+  manualOfferId: string;
+  supplierSku: string;
+  productId: string;
+  quantity: number;
+  receivedAt: string;
+  receivedBy: string;
+  inspectionState: ReturnInspectionState;
+  inspectionStartedAt?: string;
+  decision?: ReturnInventoryDecision;
+  reconciledAt?: string;
+  reconciledBy?: string;
+  note?: string;
 }
 
 export interface BackendReturnRequest {
@@ -155,12 +222,15 @@ export interface InternalNote {
 
 export type SupplierCode =
   | "SCOOP"
+  | "SYNTECH"
   | "PINNACLE"
   | "MIRO"
   | "RECTRON"
   | "MUSTEK"
+  | "TVR"
   | "AXIZ"
   | "CJ"
+  | "TEKCENTRAL"
   | "MANUAL";
 
 export type SupplierAllocationStatus =
@@ -205,6 +275,7 @@ export type AttentionReasonCode =
   | "ADDRESS_REVIEW"
   | "FULFILMENT_UNASSIGNED"
   | "RETURN_AWAITING_REVIEW"
+  | "RETURN_INVENTORY_RECONCILIATION_REQUIRED"
   | "REFUND_AWAITING_REVIEW"
   | "SHIPMENT_MISSING_TRACKING"
   | "MANUAL_HOLD"
@@ -217,6 +288,9 @@ export type AttentionReasonCode =
   | "SUPPLIER_CONFIRMATION_DELAYED"
   | "SUPPLIER_DISPATCH_OVERDUE"
   | "CJ_RECIPIENT_INFORMATION_REQUIRED"
+  | "SYNTECH_PROCUREMENT_REVIEW"
+  | "TEKCENTRAL_FULFILMENT_REQUIRED"
+  | "TEKCENTRAL_FULFILMENT_EXCEPTION"
   | "DUPLICATE_PROCUREMENT_BLOCKED";
 
 export interface AttentionReason {
@@ -229,8 +303,12 @@ export interface AttentionReason {
 export type OperationalHoldReason =
   | "ADDRESS_REVIEW"
   | "PAYMENT_REVIEW"
-  | "INVENTORY_EXCEPTION"
+  | "SUPPLIER_PROCUREMENT_ISSUE"
+  | "INVENTORY_STOCK_ISSUE"
+  | "DELIVERY_COURIER_ISSUE"
   | "CUSTOMER_REQUEST"
+  | "OTHER_MANUAL"
+  | "INVENTORY_EXCEPTION"
   | "MANUAL";
 
 export interface OperationalHold {
@@ -338,7 +416,23 @@ export interface SupplierOrderLine {
   expectedMerchandiseCost?: number | null;
   costCapturedAt?: string;
   costSourceOfferId?: string;
+  normalizedUnitCostZar?: number;
+  sourceUnitCost?: number;
+  sourceCurrency?: string;
+  fxRate?: number;
+  fxProvider?: string;
+  fxEffectiveAt?: string;
+  costEvidenceObservedAt?: string;
+  costSourceFingerprint?: string;
+  costSourceReference?: string;
+  pricingPolicyReference?: string;
+  mappingId?: string;
   sellingPriceSnapshot: number;
+  normalDealerCostExVat?: number;
+  promoPriceExVat?: number;
+  promotionActive?: boolean;
+  promotionStarts?: string;
+  promotionEnds?: string;
 }
 
 export interface SupplierOrderEvent {
@@ -363,7 +457,7 @@ export type SupplierExternalSubmissionStatus =
   | "UNKNOWN_RESULT";
 
 export interface SupplierExternalSubmission {
-  mode: "CJ_API";
+  mode: "CJ_API" | "SYNTECH_UAT_API";
   status: SupplierExternalSubmissionStatus;
   externalOrderId?: string;
   externalOrderNumber?: string;
@@ -390,6 +484,13 @@ export interface SupplierExternalSubmission {
     responseShape?: string;
     requestId?: string;
     unavailableReasons?: string[];
+    provider?: "CJ" | "SYNTECH";
+    environment?: "UAT";
+    adapterVersion?: string;
+    shippingMode?: "DELIVERY" | "COLLECTION";
+    collectionLocation?: "cpt" | "jhb";
+    lineItems?: { supplierSku: string; quantity: number }[];
+    responseCategory?: string;
   };
 }
 
@@ -429,6 +530,15 @@ export interface SupplierOrder {
   supplierDeliveryCost?: number | null;
   supplierTotalCost?: number | null;
   mockSubmissions: MockSubmissionRecord[];
+  tekcentralOperations?: {
+    stage: "RESERVED" | "PICKING" | "PACKED" | "READY_FOR_DISPATCH" | "FULFILLED" | "CANCELLED" | "EXCEPTION";
+    reservations: { manualOfferId: string; supplierSku: string; quantity: number; stockEvidenceFingerprint: string; costEvidenceFingerprint: string; reservedAt: string; releasedAt?: string; consumedAt?: string }[];
+    pickingAt?: string;
+    packedAt?: string;
+    readyAt?: string;
+    fulfilledAt?: string;
+    cancelledAt?: string;
+  };
   cjOperations?: {
     selectedLogistics?: {
       logisticName: string;
@@ -469,7 +579,7 @@ export interface SupplierProductMapping {
   supplierProductSku?: string;
   supplierVariantId?: string;
   supplierVariantSku?: string;
-  status?: "UNMAPPED" | "SUGGESTED" | "VERIFIED" | "REJECTED" | "STALE";
+  status?: "UNMAPPED" | "SUGGESTED" | "VERIFIED" | "REVIEW_REQUIRED" | "SUPERSEDED" | "REJECTED" | "STALE";
   confidence?: number;
   confidenceLevel?: "HIGH" | "MEDIUM" | "LOW";
   matchMethod?: string;
@@ -477,8 +587,30 @@ export interface SupplierProductMapping {
   verifiedBy?: string;
   verifiedAt?: string;
   source?: string;
+  reviewHistory?: {
+    previousStatus?: SupplierProductMapping["status"];
+    newStatus: SupplierProductMapping["status"];
+    actor: string;
+    evidence: string;
+    timestamp: string;
+  }[];
+  supersededAt?: string;
+  supersededByMappingId?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SupplierCostEvidence {
+  amount: number;
+  currency?: string;
+  sourceField: string;
+  endpoint: string;
+  classification: "PROCUREMENT_COST" | "STOCK_UP_PRICE" | "WHOLESALE_PRICE" | "VARIANT_SELL_PRICE" | "DISPLAY_PRICE" | "SELL_PRICE" | "UNKNOWN_PRICE_TYPE";
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  capturedAt: string;
+  sourceFingerprint?: string;
+  evidenceNote?: string;
+  actor?: string;
 }
 
 export interface SupplierCatalogueVariant {
@@ -490,7 +622,13 @@ export interface SupplierCatalogueVariant {
   attributes?: Record<string, string>;
   price?: number;
   currency?: string;
+  currencyEvidence?: SupplierCurrencyEvidence;
+  costEvidence?: SupplierCostEvidence;
+  costEvidenceHistory?: SupplierCostEvidence[];
   weight?: number;
+  lengthMm?: number;
+  widthMm?: number;
+  heightMm?: number;
   imageUrl?: string;
   stockTotal?: number;
   stockByWarehouse?: {
@@ -499,7 +637,55 @@ export interface SupplierCatalogueVariant {
     countryCode?: string;
     quantity: number;
   }[];
+  stockEvidence?: {
+    observedAt: string;
+    source: "CJ_STOCK_BY_VID";
+    sourceFingerprint: string;
+    endpoint: "/product/stock/queryByVid";
+    fields: string[];
+  };
   rawSourceFingerprint?: string;
+  identityEvidence?: {
+    status: "VARIANT_VERIFIED" | "VARIANT_REVIEW_REQUIRED" | "VARIANT_AMBIGUOUS";
+    source: "CJ_API" | "HISTORICAL_IMPORT" | "ADMIN_CONFIRMED";
+    evidence: string[];
+    reviewedAt: string;
+  };
+  logisticsEvidence?: {
+    observations: {
+      field: string;
+      value: number;
+      unit: "g" | "mm" | "UNKNOWN";
+      classification: "PRODUCT" | "PACKAGE" | "SHIPPING" | "UNKNOWN";
+      confidence: "HIGH" | "MEDIUM" | "LOW";
+      sourceFingerprint?: string;
+      capturedAt: string;
+      blocker?: "FIELD_SEMANTICS_UNCLEAR" | "MALFORMED_VALUE";
+    }[];
+    status: "COMPLETE" | "PARTIAL" | "MISSING";
+    reviewedAt: string;
+  };
+  evidenceHistory?: {
+    endpoint: string;
+    capturedAt: string;
+    sourceFingerprint: string;
+    fields: string[];
+  }[];
+  launch?: {
+    state: "NOT_SELECTED" | "CANDIDATE" | "SELECTED_FOR_LAUNCH";
+    updatedAt: string;
+    updatedBy: string;
+    logistics: {
+      status: "COMPLETE" | "PARTIAL" | "MISSING";
+      measurementScope?: "PRODUCT" | "PACKAGE";
+      weightGrams?: number;
+      lengthMm?: number;
+      widthMm?: number;
+      heightMm?: number;
+      source: "CJ_VARIANT" | "CJ_PRODUCT" | "ADMIN";
+      capturedAt: string;
+    };
+  };
 }
 
 export interface SupplierCatalogueProduct {
@@ -521,6 +707,7 @@ export interface SupplierCatalogueProduct {
   weight?: number;
   supplierPrice?: number;
   currency?: string;
+  currencyEvidence?: SupplierCurrencyEvidence;
   tekcentralCategoryGroup?: string;
   tekcentralRelevanceScore?: number;
   stockTotal?: number;
@@ -536,6 +723,30 @@ export interface SupplierCatalogueProduct {
   lastFetchedAt?: string;
   lastSuccessfulRefreshAt?: string;
   rawSourceFingerprint: string;
+  evidenceHistory?: {
+    endpoint: string;
+    capturedAt: string;
+    sourceFingerprint: string;
+    fields: string[];
+  }[];
+  evidenceSelection?: {
+    selectedVariantId?: string;
+    selectedAt?: string;
+    selectedBy?: string;
+    evidenceNote?: string;
+    history: { previousVariantId?: string; selectedVariantId: string; actor: string; evidence: string; timestamp: string }[];
+  };
+}
+
+export interface SupplierCurrencyEvidence {
+  currency?: string;
+  source: "API_FIELD" | "CJ_API_CONTRACT" | "ACCOUNT_CONFIGURATION" | "CJ_DOCUMENTED_DEFAULT" | "ADMIN_CONFIRMED" | "UNKNOWN";
+  sourceField?: string;
+  sourceReference?: string;
+  evidenceNote?: string;
+  confidence?: "HIGH" | "MEDIUM" | "LOW";
+  confirmedAt: string;
+  confirmedBy?: string;
 }
 
 export interface AdminActivityEntry {
@@ -546,6 +757,7 @@ export interface AdminActivityEntry {
 
 export interface BackendOrder {
   id: string;
+  customerAccountId?: string | null;
   orderNumber: string;
   createdAt: string;
   updatedAt: string;

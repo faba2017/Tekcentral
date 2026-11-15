@@ -35,3 +35,4 @@ Address/cart changes fail quote fingerprint validation. Revalidation also compar
 ## Freight Reconciliation
 
 Estimated internal freight, actual supplier/courier freight and customer shipping charge are separate values. Operations may later record an actual freight cost against an accepted order snapshot. TekCentral derives Rand/percentage variance and `WITHIN_TOLERANCE`, `UNDER_RECOVERED` or `OVER_RECOVERED` status for internal analysis only. Reconciliation never charges, refunds or changes customer/order fulfilment state automatically.
+Checkout-blocking delivery calculation failures create aggregated Critical operational alerts with diagnostic codes and a link to Shipping settings. Invalid customer input and ordinary address correction do not become system incidents; full addresses are never stored in alerts.

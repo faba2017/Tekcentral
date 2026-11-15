@@ -18,7 +18,7 @@ import { ProductCollectionSection } from "@/components/sections/ProductCollectio
 import { RoboIntroSection } from "@/components/sections/RoboIntroSection";
 import { WhyShopSection } from "@/components/sections/WhyShopSection";
 import { cn } from "@/lib/utils";
-import { usePageTitle } from "@/lib/page-title";
+import { organizationJsonLd, usePageMetadata } from "@/lib/page-metadata";
 import { useCart } from "@/state/cart";
 import "./HomePage.css";
 
@@ -127,7 +127,7 @@ const mobileNavItems = storeNavItems
 export function HomePage() {
   const navigate = useNavigate();
   const reduceMotion = useReducedMotion();
-  usePageTitle("TekCentral | Technology, made easier.");
+  usePageMetadata({ title: "TekCentral | Technology, made easier.", description: "Shop computers, networking, printing, security, power and smart technology for home, work and business in South Africa.", path: "/", jsonLd: organizationJsonLd() });
 
   return (
     <>

@@ -76,10 +76,18 @@ const unknownCapabilityMap = capabilities({
 });
 
 const supplierCapabilityMaps: Record<SupplierCode, SupplierCapabilityMap> = {
+  TEKCENTRAL: capabilities({ catalogue: "MANUAL", productDetail: "MANUAL", stock: "MANUAL", warehouseStock: "UNSUPPORTED", pricing: "MANUAL", productImages: "MANUAL", productContent: "MANUAL", productAttributes: "MANUAL", evidence: "MANUAL", syncHistory: "UNSUPPORTED", health: "SUPPORTED", productMapping: "MANUAL", orderCreate: "MANUAL", orderSubmitEmail: "UNSUPPORTED", portalAutomation: "UNSUPPORTED", directFulfilment: "MANUAL", logisticsQuote: "UNSUPPORTED", tracking: "MANUAL", orderStatus: "MANUAL", supplierPayment: "UNSUPPORTED" }),
+  SYNTECH: capabilities({ catalogue: "SUPPORTED", productDetail: "SUPPORTED", stock: "SUPPORTED", warehouseStock: "SUPPORTED", pricing: "SUPPORTED", productImages: "SUPPORTED", productContent: "SUPPORTED", productAttributes: "SUPPORTED", dealerPricing: "SUPPORTED", promotions: "SUPPORTED", branchStock: "SUPPORTED", shipmentEta: "SUPPORTED", categoryEvidence: "SUPPORTED", evidence: "SUPPORTED", syncHistory: "SUPPORTED", health: "SUPPORTED", productMapping: "SUPPORTED", orderCreate: "SUPPORTED", orderSubmitEmail: "UNSUPPORTED", portalAutomation: "UNSUPPORTED", directFulfilment: "SUPPORTED", logisticsQuote: "UNSUPPORTED", tracking: "UNSUPPORTED", orderStatus: "UNSUPPORTED", supplierPayment: "UNSUPPORTED" }),
   SCOOP: capabilities({
     catalogue: "SUPPORTED",
+    productDetail: "SUPPORTED",
     stock: "SUPPORTED",
     pricing: "SUPPORTED",
+    productImages: "SUPPORTED",
+    productContent: "SUPPORTED",
+    evidence: "SUPPORTED",
+    syncHistory: "SUPPORTED",
+    health: "SUPPORTED",
     productMapping: "SUPPORTED",
     orderCreate: "UNSUPPORTED",
     orderSubmitEmail: "MANUAL",
@@ -92,8 +100,17 @@ const supplierCapabilityMaps: Record<SupplierCode, SupplierCapabilityMap> = {
   }),
   CJ: capabilities({
     catalogue: "SUPPORTED",
+    productDetail: "SUPPORTED",
+    variantDetail: "SUPPORTED",
     stock: "SUPPORTED",
+    warehouseStock: "SUPPORTED",
     pricing: "SUPPORTED",
+    logistics: "SUPPORTED",
+    productImages: "SUPPORTED",
+    productContent: "SUPPORTED",
+    evidence: "SUPPORTED",
+    syncHistory: "SUPPORTED",
+    health: "SUPPORTED",
     productMapping: "SUPPORTED",
     orderCreate: "SUPPORTED",
     orderSubmitEmail: "UNSUPPORTED",
@@ -108,16 +125,20 @@ const supplierCapabilityMaps: Record<SupplierCode, SupplierCapabilityMap> = {
   PINNACLE: unknownCapabilityMap,
   MIRO: unknownCapabilityMap,
   RECTRON: unknownCapabilityMap,
-  MUSTEK: unknownCapabilityMap,
+  MUSTEK: capabilities({ catalogue: "SUPPORTED", productDetail: "UNKNOWN", stock: "UNKNOWN", pricing: "SUPPORTED", productImages: "MANUAL", productContent: "MANUAL", dealerPricing: "SUPPORTED", evidence: "SUPPORTED", syncHistory: "SUPPORTED", health: "SUPPORTED", productMapping: "SUPPORTED", orderCreate: "MANUAL", orderSubmitEmail: "UNSUPPORTED", portalAutomation: "UNSUPPORTED", directFulfilment: "MANUAL", logisticsQuote: "UNSUPPORTED", tracking: "MANUAL", orderStatus: "MANUAL", supplierPayment: "UNSUPPORTED" }),
+  TVR: capabilities({ catalogue: "SUPPORTED", productDetail: "UNKNOWN", stock: "UNKNOWN", pricing: "UNKNOWN", productImages: "UNKNOWN", productContent: "UNKNOWN", evidence: "SUPPORTED", syncHistory: "SUPPORTED", health: "SUPPORTED", productMapping: "SUPPORTED", orderCreate: "MANUAL", orderSubmitEmail: "UNSUPPORTED", portalAutomation: "UNSUPPORTED", directFulfilment: "MANUAL", logisticsQuote: "UNSUPPORTED", tracking: "MANUAL", orderStatus: "MANUAL", supplierPayment: "UNSUPPORTED" }),
   AXIZ: unknownCapabilityMap,
 };
 
 const supplierNames: Record<SupplierCode, string> = {
+  TEKCENTRAL: "TekCentral",
+  SYNTECH: "Syntech Distribution",
   SCOOP: "Scoop Distribution",
   PINNACLE: "Pinnacle ICT",
   MIRO: "MiRO Distribution",
   RECTRON: "Rectron",
   MUSTEK: "Mustek",
+  TVR: "TVR Distribution",
   AXIZ: "Axiz",
   CJ: "CJdropshipping",
   MANUAL: "Manual sourcing",
@@ -155,7 +176,7 @@ export const supplierAdapters: Record<SupplierCode, SupplierAdapter> = Object.fr
       name: supplierNames[code],
       capabilityMap: supplierCapabilityMaps[code],
       getCapabilities: () => supplierCapabilityMaps[code],
-      supportedOrderModes: code === "CJ" ? ["API"] : code === "SCOOP" ? ["EMAIL", "MANUAL"] : ["MANUAL"],
+      supportedOrderModes: code === "CJ" ? ["API"] : code === "SYNTECH" ? ["API", "MANUAL"] : code === "SCOOP" ? ["EMAIL", "MANUAL"] : ["MANUAL"],
       capabilities:
         code === "SCOOP"
           ? {
@@ -190,10 +211,12 @@ export const supplierAdapters: Record<SupplierCode, SupplierAdapter> = Object.fr
                 realOrderCancel: false,
                 realDispatch: false,
               }
-          : unknownCapabilities,
-      defaultSubmissionMode: code === "CJ" ? "API" : "MANUAL",
+          : code === "SYNTECH"
+            ? { api: true, emailOrdering: false, portalOrdering: false, directShipping: true, feed: "UNKNOWN", mockOnly: false, catalogueRead: true, stockRead: true, realOrderPrepare: true, get realOrderSubmit() { const writeFlag = process.env.SYNTECH_UAT_ORDER_WRITES_ENABLED; return (writeFlag !== undefined ? writeFlag === "true" : process.env.SYNTECH_RESELLER_API_ENABLED === "true") && (process.env.SYNTECH_RESELLER_API_ENVIRONMENT ?? "UAT").toUpperCase() === "UAT"; }, payment: false, cancel: false, automaticFulfilment: false, realOrderCancel: false, realDispatch: false }
+            : unknownCapabilities,
+      defaultSubmissionMode: code === "CJ" || code === "SYNTECH" ? "API" : "MANUAL",
       defaultFulfilmentMode:
-        code === "CJ" ? "PENDING_LOGISTICS" : code === "SCOOP" ? "SHIP_TO_CUSTOMER" : "MANUAL",
+        code === "CJ" ? "PENDING_LOGISTICS" : code === "SCOOP" || code === "SYNTECH" ? "SHIP_TO_CUSTOMER" : "MANUAL",
       createOrderPayload: createPayload,
       submitOrder: async (order, supplierOrder, scenario) => ({
         supplierReference:

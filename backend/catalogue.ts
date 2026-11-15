@@ -1,5 +1,6 @@
 import { products } from "../src/data/catalogue.js";
 import { getPublishedBackendProduct } from "./productPublicationRepository.js";
+import { withCanonicalTaxonomy } from "./canonicalTaxonomyService.js";
 
 export const backendProducts = products.map((product) => ({
   productId: product.id,
@@ -12,7 +13,8 @@ export const backendProducts = products.map((product) => ({
 }));
 
 export async function getBackendProduct(productId: string) {
-  return backendProducts.find((item) => item.productId === productId) ?? getPublishedBackendProduct(productId);
+  const fixture = backendProducts.find((item) => item.productId === productId);
+  return fixture ? withCanonicalTaxonomy(fixture) : getPublishedBackendProduct(productId);
 }
 
 export const backendDeliveryMethods = [

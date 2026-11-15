@@ -33,7 +33,13 @@ export class CjClient {
         signal: controller.signal,
       });
       const payload = (await response.json().catch(() => ({}))) as CjApiEnvelope<T>;
-      if (response.status === 429) throw new CjApiError("CJ_RATE_LIMITED", "CJ API rate limit reached.", payload.requestId);
+      if (response.status === 429) {
+        const retryAfter = response.headers.get("retry-after");
+        const retryAfterMs = retryAfter
+          ? /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1_000 : Math.max(0, new Date(retryAfter).getTime() - Date.now())
+          : undefined;
+        throw new CjApiError("CJ_RATE_LIMITED", "CJ API rate limit reached.", payload.requestId, retryAfterMs);
+      }
       if (!response.ok) throw new CjApiError("CJ_API_UNAVAILABLE", payload.message || "CJ API unavailable.", payload.requestId);
       if (payload.result === false || payload.success === false) {
         const code = payload.code === 1600001 || payload.code === 1600002 ? "CJ_AUTH_FAILED" : "CJ_INVALID_RESPONSE";

@@ -1,8 +1,10 @@
 export type ScoopStockAvailability = "AVAILABLE" | "OUT_OF_STOCK" | "UNKNOWN" | "STALE";
 export type ScoopProductPageResolutionStatus = "RESOLVED" | "NOT_FOUND" | "AMBIGUOUS" | "ERROR";
+export type ScoopCanonicalUrlStatus = "VERIFIED" | "REVIEW_REQUIRED" | "UNKNOWN" | "CONFLICT";
+export type ScoopCanonicalUrlSource = "PREVIOUSLY_VERIFIED" | "WEBSITE_OBSERVATION" | "TRUSTED_IMPORT" | "STAFF_PROVIDED" | "SAFE_DISCOVERY";
 export type ScoopLogisticsStatus = "COMPLETE" | "WEIGHT_ONLY" | "DIMENSIONS_ONLY" | "MISSING" | "INVALID";
 export type ScoopLogisticsSource = "SUPPLIER_FEED" | "SUPPLIER_PRODUCT_PAGE" | "MANUFACTURER" | "ADMIN_IMPORT" | "ADMIN" | "UNKNOWN";
-export type ScoopLogisticsFailureReason = "IDENTITY_NOT_RESOLVED" | "LOW_IDENTITY_CONFIDENCE" | "MANUFACTURER_PROVIDER_NOT_AVAILABLE" | "AUTHORITATIVE_SOURCE_NOT_FOUND" | "SOURCE_BLOCKED" | "SOURCE_TEMPORARILY_UNAVAILABLE" | "RATE_LIMITED" | "WEIGHT_NOT_FOUND" | "DIMENSIONS_NOT_FOUND" | "PARTIAL_DATA" | "INVALID_SOURCE_DATA" | "NETWORK_ERROR" | "PARSER_ERROR" | "CACHE_ERROR";
+export type ScoopLogisticsFailureReason = "IDENTITY_NOT_RESOLVED" | "LOW_IDENTITY_CONFIDENCE" | "HARDWARE_REVISION_REQUIRED" | "MANUFACTURER_PROVIDER_NOT_AVAILABLE" | "AUTHORITATIVE_SOURCE_NOT_FOUND" | "PRODUCT_URL_UNKNOWN" | "SOURCE_BLOCKED" | "SOURCE_UNAVAILABLE" | "SOURCE_TEMPORARILY_UNAVAILABLE" | "RATE_LIMITED" | "WEIGHT_NOT_FOUND" | "DIMENSIONS_NOT_FOUND" | "MEASUREMENTS_NOT_FOUND" | "PACKAGE_DATA_NOT_FOUND" | "PRODUCT_DATA_NOT_FOUND" | "IDENTITY_MISMATCH" | "IDENTITY_LOW_CONFIDENCE" | "AMBIGUOUS_MULTI_COMPONENT" | "INVALID_MEASUREMENTS" | "PARTIAL_DATA" | "INVALID_SOURCE_DATA" | "NETWORK_ERROR" | "PARSER_ERROR" | "CACHE_ERROR";
 export type ScoopLaunchAssortmentState = "NOT_SELECTED" | "CANDIDATE" | "SELECTED_FOR_LAUNCH";
 export type ScoopCatalogueSourceType = "XML_FEED" | "WEBSITE" | "ADMIN_IMPORT";
 export type ScoopReconciliationStatus = "XML_ONLY" | "WEBSITE_ONLY" | "BOTH" | "SOURCE_MISMATCH" | "STALE";
@@ -59,7 +61,13 @@ export interface ScoopLogisticsMetadata {
   identityConfidence?: "HIGH" | "MEDIUM" | "LOW";
   sourceConfidence?: "HIGH" | "MEDIUM" | "LOW";
   shippingBasis?: "PACKAGE" | "PRODUCT_DIMENSIONS_FALLBACK";
+  measurementScope?: "PRODUCT" | "PACKAGE" | "PRODUCT_AND_PACKAGE";
+  productSource?: ScoopLogisticsSource;
+  packageSource?: ScoopLogisticsSource;
   notes?: string;
+  extractionConfidence?: "HIGH" | "MEDIUM" | "LOW";
+  contentFingerprint?: string;
+  components?: { label: string; weightGrams?: number; lengthMm?: number; widthMm?: number; heightMm?: number; rawWeight?: string; rawDimensions?: string }[];
   actualWeightKg?: number;
   volumeM3?: number;
   rawWeight?: string;
@@ -71,6 +79,12 @@ export interface ScoopProductPageResolution {
   productPageUrl?: string;
   resolvedAt: string;
   error?: string;
+  urlStatus?: ScoopCanonicalUrlStatus;
+  urlSource?: ScoopCanonicalUrlSource;
+  urlIdentityConfidence?: "HIGH" | "MEDIUM" | "LOW";
+  verifiedAt?: string;
+  lastCheckedAt?: string;
+  history?: { url: string; source: ScoopCanonicalUrlSource; status: ScoopCanonicalUrlStatus; observedAt: string }[];
 }
 
 export interface ScoopCatalogueProduct {
@@ -118,6 +132,8 @@ export interface ScoopCatalogueProduct {
   logisticsLastAttemptAt?: string;
   logisticsLastError?: string;
   logisticsLastFailure?: ScoopLogisticsFailureReason;
+  confirmedHardwareRevision?: { revision: string; sourceReference: string; contentFingerprint: string; confirmedAt: string; confirmedBy: string };
+  capturedContentSuggestions?: { contentFingerprint: string; sourceUrl: string; capturedAt: string; specifications: { name: string; value: string; group?: string; source?: string; sourceUrl?: string; capturedAt?: string; origin?: string }[]; documents: { type: string; title: string; url: string; verified: boolean; source?: string; sourceUrl?: string; capturedAt?: string; origin?: string }[] };
   launchAssortment?: ScoopLaunchAssortment;
 }
 

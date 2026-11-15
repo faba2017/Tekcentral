@@ -1,8 +1,8 @@
 import type { InternalProduct } from "./internalProductRepository.js";
 import type { PublicProductSnapshot } from "./productPublicationRepository.js";
 
-export type PublicationContentOrigin = "AUTO_DEFAULT" | "SOURCE_DERIVED" | "STAFF_EDITED";
-export type PublicationContentOrigins = Partial<Record<"shortDescription" | "description" | "seoTitle" | "seoDescription" | "deliveryDisplay", PublicationContentOrigin>>;
+export type PublicationContentOrigin = "AUTO_DEFAULT" | "SOURCE_DERIVED" | "APPROVED_SOURCE_DERIVED" | "STAFF_EDITED";
+export type PublicationContentOrigins = Partial<Record<"shortDescription" | "description" | "overview" | "seoTitle" | "seoDescription" | "deliveryDisplay", PublicationContentOrigin>>;
 const compact = (value: string) => value.replace(/\s+/g, " ").trim();
 const identity = (value: string) => compact(value).toLowerCase().replace(/wi[\s-]?fi/g, "wifi").replace(/[^a-z0-9]+/g, " ").trim();
 const meaningful = (value: string | undefined, title: string) => Boolean(value && identity(value) !== identity(title) && identity(value).split(" ").length >= 4);
@@ -23,6 +23,7 @@ export function preparePublicationContentDefaults(input: { product: InternalProd
   };
   assign("shortDescription", meaningful(sourceDescription, draft.name) ? sourceDescription : fallbackShort, meaningful(sourceDescription, draft.name) ? "SOURCE_DERIVED" : "AUTO_DEFAULT");
   assign("description", meaningful(sourceDescription, draft.name) ? sourceDescription : fallbackLong, meaningful(sourceDescription, draft.name) ? "SOURCE_DERIVED" : "AUTO_DEFAULT");
+  assign("overview", meaningful(draft.overview || draft.description, draft.name) ? compact(draft.overview || draft.description || "") : fallbackLong, meaningful(draft.overview || draft.description, draft.name) ? (origins.description ?? "SOURCE_DERIVED") : "AUTO_DEFAULT");
   assign("seoTitle", defaultSeoTitle(draft.name), "AUTO_DEFAULT");
   assign("seoDescription", trimAtWord(`Shop ${draft.name} from TekCentral. ${draft.category}${draft.subcategory ? ` and ${draft.subcategory}` : ""} technology for home, work and business.`, 160), "AUTO_DEFAULT");
   assign("deliveryDisplay", "Delivery calculated at checkout based on your delivery address.", "AUTO_DEFAULT");

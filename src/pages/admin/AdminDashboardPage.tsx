@@ -1,222 +1,36 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { AdminPageHeader, AdminShell, AdminStatusBadge } from "@/components/admin/AdminShell";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { AdminFeedback, AdminPageHeader, AdminShell, AdminStatusBadge } from "@/components/admin/AdminShell";
+import { ReportPeriodControl } from "@/components/admin/ReportPeriodControl";
 import { apiRequest } from "@/lib/api";
+import type { DashboardData, PeriodId } from "@/lib/analytics";
 import { formatCurrency } from "@/lib/format";
-import { itemCount } from "@/lib/admin";
-import { paymentStatusLabels, orderStatusLabels } from "@/lib/order-status";
-import { formatDateTime } from "@/lib/order-utils";
 import { usePageTitle } from "@/lib/page-title";
-import type { AdminOrdersResponse, AdminSupplierOrdersResponse } from "@/lib/admin";
-import type { AttentionReason, Order, SupplierOrder } from "@/types/order";
+import type { StorefrontAnalyticsReport } from "@/lib/storefront-analytics";
+import type { OperationalAlertSummary } from "@/lib/operational-alerts";
 
 export function AdminDashboardPage() {
   usePageTitle("Admin dashboard | TekCentral");
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [attention, setAttention] = useState<AdminOrdersResponse["attention"]>([]);
-  const [supplierOrders, setSupplierOrders] = useState<SupplierOrder[]>([]);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    apiRequest<AdminOrdersResponse>("/api/admin/orders")
-      .then((response) => {
-        setOrders(response.orders);
-        setAttention(response.attention);
-      })
-      .catch(() => setError("Admin order data is not available right now."));
-    apiRequest<AdminSupplierOrdersResponse>("/api/admin/supplier-orders")
-      .then((response) => setSupplierOrders(response.supplierOrders))
-      .catch(() => setSupplierOrders([]));
-  }, []);
-
-  const attentionRows = useMemo(
-    () =>
-      attention
-        .filter((entry) => entry.reasons.length > 0)
-        .map((entry) => ({
-          order: orders.find((order) => order.orderNumber === entry.orderNumber),
-          reasons: entry.reasons,
-        }))
-        .filter((entry): entry is { order: Order; reasons: AttentionReason[] } =>
-          Boolean(entry.order),
-        ),
-    [attention, orders],
-  );
-
-  const supplierMetrics = useMemo(
-    () => [
-      {
-        label: "Awaiting approval",
-        value: supplierOrders.filter((item) => item.status === "READY_FOR_APPROVAL").length,
-        to: "/admin/supplier-orders",
-      },
-      {
-        label: "Submitted",
-        value: supplierOrders.filter((item) => item.status === "SUBMITTED").length,
-        to: "/admin/supplier-orders",
-      },
-      {
-        label: "Backordered",
-        value: supplierOrders.filter(
-          (item) => item.status === "BACKORDERED" || item.status === "PARTIALLY_CONFIRMED",
-        ).length,
-        to: "/admin/supplier-orders",
-      },
-      {
-        label: "Rejected",
-        value: supplierOrders.filter((item) => item.status === "REJECTED").length,
-        to: "/admin/supplier-orders",
-      },
-    ],
-    [supplierOrders],
-  );
-
-  const reasonBreakdown = useMemo(() => {
-    const counts = new Map<string, number>();
-    attentionRows.forEach(({ reasons }) => {
-      reasons.forEach((reason) => counts.set(reason.label, (counts.get(reason.label) ?? 0) + 1));
-    });
-    return Array.from(counts.entries()).map(([label, count]) => `${count} ${label.toLowerCase()}`);
-  }, [attentionRows]);
-
-  const metrics = useMemo(
-    () => [
-      {
-        label: "Orders requiring attention",
-        value: attentionRows.length,
-        to: "/admin/orders?attention=true",
-        helper: reasonBreakdown.slice(0, 3).join(" · "),
-      },
-      {
-        label: "Paid awaiting processing",
-        value: orders.filter(
-          (order) => order.payment.status === "PAID" && order.status === "CONFIRMED",
-        ).length,
-        to: "/admin/orders?filter=confirmed",
-      },
-      {
-        label: "Processing",
-        value: orders.filter((order) => order.status === "PROCESSING").length,
-        to: "/admin/orders?filter=processing",
-      },
-      {
-        label: "Partially shipped",
-        value: orders.filter((order) => order.status === "PARTIALLY_SHIPPED").length,
-        to: "/admin/orders?filter=partially shipped",
-      },
-      { label: "Shipped", value: orders.filter((order) => order.status === "SHIPPED").length, to: "/admin/orders?filter=shipped" },
-      {
-        label: "Returns awaiting review",
-        value: orders.flatMap((order) => order.returns).filter((item) => item.status === "REQUESTED")
-          .length,
-        to: "/admin/orders?filter=return requested",
-      },
-      {
-        label: "Refunds awaiting review",
-        value: orders.flatMap((order) => order.refunds).filter((item) => item.status === "PENDING")
-          .length,
-        to: "/admin/orders?filter=refund requested",
-      },
-    ],
-    [attentionRows.length, orders, reasonBreakdown],
-  );
-
-  return (
-    <AdminShell>
-      <AdminPageHeader
-        eyebrow="Internal operations"
-        title="Admin dashboard"
-        description="Operational order summary from the current backend demo order store."
-      />
-      {error && <p className="mt-6 rounded-md border border-[#FDA29B] bg-[#FFFBFA] p-4 text-sm font-semibold">{error}</p>}
-      <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
-        {metrics.map((metric) => (
-          <Link key={metric.label} to={metric.to} className="rounded-lg border border-[#E4E7EC] bg-white p-4 shadow-sm transition hover:border-[var(--tek-accent)]">
-            <p className="text-xs font-black uppercase tracking-[0.12em] text-[#727986]">
-              {metric.label}
-            </p>
-            <p className="mt-3 text-3xl font-black text-[#0A0A0A]">{metric.value}</p>
-            {metric.helper && <p className="mt-2 text-xs font-semibold leading-5 text-[#727986]">{metric.helper}</p>}
-          </Link>
-        ))}
-      </div>
-      <section className="mt-8 rounded-lg border border-[#E4E7EC] bg-white shadow-sm">
-        <div className="border-b border-[#E4E7EC] p-4">
-          <h2 className="text-lg font-black">Attention queue</h2>
-        </div>
-        <div className="divide-y divide-[#E4E7EC]">
-          {attentionRows.slice(0, 6).map(({ order, reasons }) => (
-            <Link key={order.orderNumber} to={`/admin/orders/${order.orderNumber}`} className="grid gap-3 p-4 transition hover:bg-[#F6F7F9] md:grid-cols-[1fr_1.2fr_110px]">
-              <div>
-                <p className="text-sm font-black">{order.orderNumber}</p>
-                <p className="mt-1 text-xs font-semibold text-[#727986]">{order.customer.firstName} {order.customer.lastName}</p>
-              </div>
-              <div>
-                <p className="text-sm font-black text-[#0A0A0A]">{reasons[0].label}</p>
-                <p className="mt-1 text-xs font-semibold text-[#727986]">{reasons[0].detail}</p>
-              </div>
-              <span className="self-start rounded-md bg-[var(--tek-accent)] px-3 py-2 text-center text-sm font-black text-[var(--tek-accent-ink)]">
-                Review
-              </span>
-            </Link>
-          ))}
-          {attentionRows.length === 0 && <p className="p-6 text-sm font-semibold text-[#727986]">No attention items right now.</p>}
-        </div>
-      </section>
-      <section className="mt-8 rounded-lg border border-[#E4E7EC] bg-white p-4 shadow-sm">
-        <h2 className="text-lg font-black">Supplier operations</h2>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {supplierMetrics.map((metric) => (
-            <Link
-              key={metric.label}
-              to={metric.to}
-              className="rounded-lg border border-[#E4E7EC] bg-[#F6F7F9] p-4 transition hover:border-[var(--tek-accent)]"
-            >
-              <p className="text-xs font-black uppercase tracking-[0.12em] text-[#727986]">
-                {metric.label}
-              </p>
-              <p className="mt-3 text-3xl font-black">{metric.value}</p>
-            </Link>
-          ))}
-        </div>
-      </section>
-      <section className="mt-8 rounded-lg border border-[#E4E7EC] bg-white shadow-sm">
-        <div className="flex items-center justify-between gap-4 border-b border-[#E4E7EC] p-4">
-          <h2 className="text-lg font-black">Recent orders</h2>
-          <Link to="/admin/orders" className="text-sm font-black text-[var(--tek-accent)]">
-            View all
-          </Link>
-        </div>
-        <div className="divide-y divide-[#E4E7EC]">
-          {orders.slice(0, 6).map((order) => (
-            <Link
-              key={order.orderNumber}
-              to={`/admin/orders/${order.orderNumber}`}
-              className="grid gap-3 p-4 transition hover:bg-[#F6F7F9] md:grid-cols-[1.2fr_1fr_0.8fr_0.8fr]"
-            >
-              <div>
-                <p className="text-sm font-black">{order.orderNumber}</p>
-                <p className="mt-1 text-xs font-semibold text-[#727986]">
-                  {order.customer.firstName} {order.customer.lastName} | {itemCount(order)} items
-                </p>
-              </div>
-              <p className="text-sm font-semibold text-[#3F4652]">
-                {formatDateTime(order.createdAt)}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <AdminStatusBadge label={paymentStatusLabels[order.payment.status]} status={order.payment.status} />
-                <AdminStatusBadge label={orderStatusLabels[order.status]} status={order.status} />
-              </div>
-              <p className="text-sm font-black md:text-right">
-                {formatCurrency(order.total, order.currency)}
-              </p>
-            </Link>
-          ))}
-          {orders.length === 0 && (
-            <p className="p-6 text-sm font-semibold text-[#727986]">No backend orders found.</p>
-          )}
-        </div>
-      </section>
-    </AdminShell>
-  );
+  const [params, setParams] = useSearchParams(); const period = (params.get("period") ?? "LAST_30_DAYS") as PeriodId;
+  const [data, setData] = useState<DashboardData>(); const [error, setError] = useState("");
+  const [store, setStore] = useState<StorefrontAnalyticsReport>();
+  const [alerts, setAlerts] = useState<OperationalAlertSummary>();
+  useEffect(() => { void apiRequest<DashboardData>(`/api/admin/dashboard?period=${period}`).then((response) => { setData(response); setError(""); }).catch(() => setError("Dashboard analytics could not be loaded.")); }, [period]);
+  useEffect(() => { void apiRequest<StorefrontAnalyticsReport>("/api/admin/analytics?days=1").then(setStore).catch(() => undefined); const id = window.setInterval(() => void apiRequest<StorefrontAnalyticsReport>("/api/admin/analytics?days=1").then(setStore).catch(() => undefined), 60_000); return () => window.clearInterval(id); }, []);
+  useEffect(() => { void apiRequest<OperationalAlertSummary>("/api/admin/alerts/summary").then(setAlerts).catch(() => undefined); }, []);
+  const changePeriod = (next: { period: PeriodId }) => { setData(undefined); setError(""); setParams({ period: next.period }); };
+  return <AdminShell><AdminPageHeader eyebrow="Management" title="Dashboard" description="Business performance for the selected period and current operational attention." />
+    {Boolean(alerts?.critical) && <section role="alert" className="mt-5 flex flex-col gap-3 rounded-lg border border-[#FDA29B] bg-[#FEF3F2] p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-black text-[#B42318]">{alerts!.critical} critical operational {alerts!.critical === 1 ? "issue requires" : "issues require"} attention.</p><p className="mt-1 text-sm font-semibold text-[#7A271A]">Review the aggregated incident before taking action in its canonical workflow.</p></div><Link to="/admin/alerts?severity=CRITICAL" className="shrink-0 rounded-md bg-[#B42318] px-4 py-2 text-center text-sm font-black text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#B42318] focus-visible:ring-offset-2">View alerts</Link></section>}
+    <div className="mt-5 flex flex-wrap items-end justify-between gap-3"><ReportPeriodControl period={period} allowCustom={false} onChange={changePeriod} />{data && <p className="text-xs font-semibold text-[#667085]">{new Date(data.range.from).toLocaleDateString("en-ZA")} – {new Date(data.range.to).toLocaleDateString("en-ZA")} · {data.range.timezone}</p>}</div>
+    {error && <div className="mt-5"><AdminFeedback variant="warning" message={error} /></div>}
+    {store && <><section className="mt-5 grid gap-3 sm:grid-cols-3 xl:grid-cols-5"><Kpi label="Visitors online" value={String(store.kpis.visitorsOnline)} helper={`Active in the last ${store.definitions.activeVisitorMinutes} minutes`} to="/admin/reports/analytics?days=1"/><Kpi label="Sessions today" value={String(store.kpis.sessions)} to="/admin/reports/analytics?days=1"/><Kpi label="Product views today" value={String(store.kpis.productViews)} to="/admin/reports/analytics?days=1"/><Kpi label="Active carts" value={String(store.kpis.activeCarts)} to="/admin/reports/analytics?days=1"/><Kpi label="Checkout starts" value={String(store.kpis.checkoutStarts)} to="/admin/reports/analytics?days=1"/><Kpi label="Orders today" value={String(store.kpis.orders)} to="/admin/reports/analytics?days=1"/><Kpi label="Revenue today" value={formatCurrency(store.kpis.paidRevenue, "ZAR")} to="/admin/reports/analytics?days=1"/><Kpi label="Conversion" value={`${store.kpis.conversionRate.toFixed(1)}%`} helper={store.definitions.conversionFormula} to="/admin/reports/analytics?days=1"/><Kpi label="Paid orders" value={String(store.kpis.paidOrders)} to="/admin/reports/analytics?days=1"/><Kpi label="Zeus requests" value={String(store.kpis.zeusRequests)} to="/admin/reports/zeus"/></section><section className="mt-5 grid gap-5 xl:grid-cols-2"><div className="rounded-lg border border-[#E4E7EC] bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="font-black">Storefront availability</h2><Link to="/admin/products" className="text-sm font-black text-[#176B5C]">Review Products</Link></div><dl className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4"><div><dt className="text-[#667085]">Published</dt><dd className="text-2xl font-black">{store.availability.published}</dd></div><div><dt className="text-[#667085]">Purchasable</dt><dd className="text-2xl font-black">{store.availability.purchasable}</dd></div><div><dt className="text-[#667085]">Check required</dt><dd className="text-2xl font-black">{store.availability.states.CHECK_REQUIRED ?? 0}</dd></div><div><dt className="text-[#667085]">Out of stock</dt><dd className="text-2xl font-black">{store.availability.states.OUT_OF_STOCK ?? 0}</dd></div></dl></div><div className="rounded-lg border border-[#E4E7EC] bg-white p-5 shadow-sm"><h2 className="font-black">Operational alerts</h2><div className="mt-4 space-y-2 text-sm">{store.availability.purchasable === 0 && <p className="rounded-md bg-[#FFFAEB] p-3 font-bold text-[#B54708]">No published Products are currently purchasable.</p>}{(store.availability.states.CHECK_REQUIRED ?? 0) > 0 && <p className="rounded-md bg-[#FFFAEB] p-3 font-bold text-[#B54708]">{store.availability.states.CHECK_REQUIRED} Product(s) require an availability check.</p>}{store.zeus.providerFailures > 0 && <p className="rounded-md bg-[#FEF3F2] p-3 font-bold text-[#B42318]">Zeus recorded {store.zeus.providerFailures} provider failure(s) today.</p>}{store.availability.purchasable > 0 && (store.availability.states.CHECK_REQUIRED ?? 0) === 0 && store.zeus.providerFailures === 0 && <p className="text-[#667085]">No analytics-backed critical alerts.</p>}</div></div></section></>}
+    {!data ? <p className="mt-6 text-sm font-semibold text-[#667085]">Loading dashboard...</p> : <>
+      <section className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-6"><Kpi label="Revenue" value={formatCurrency(data.kpis.revenue, "ZAR")} to={`/admin/reports?report=sales&period=${period}`} /><Kpi label="Orders" value={String(data.kpis.orders)} to={`/admin/orders?period=${period}`} /><Kpi label="Average order value" value={formatCurrency(data.kpis.averageOrderValue, "ZAR")} to={`/admin/reports?report=sales&period=${period}`} /><Kpi label={data.kpis.grossProfit.partial ? "Gross profit · Partial" : "Gross profit"} value={data.kpis.grossProfit.available && data.kpis.grossProfit.value !== undefined ? formatCurrency(data.kpis.grossProfit.value, "ZAR") : "Unavailable"} helper={data.kpis.grossProfit.reason} to={`/admin/reports?report=profitability&period=${period}`} /><Kpi label="Products requiring attention" value={String(data.kpis.productsAttention)} to="/admin/products?view=attention" current /><Kpi label="Supplier orders requiring action" value={String(data.kpis.supplierOrdersAttention)} to="/admin/supplier-orders?attention=true" current /></section>
+      <section className="mt-6 grid gap-5 xl:grid-cols-2"><BarChart title="Revenue trend" rows={data.revenueTrend.map((row) => ({ label: row.label, value: row.revenue, display: formatCurrency(row.revenue, "ZAR") }))} empty="No paid sales in this period." /><BarChart title="Order status composition" rows={data.orderStatusComposition.map((row) => ({ label: row.label.replace(/_/g, " "), value: row.value, display: String(row.value) }))} empty="No orders are available." /></section>
+      <section className="mt-6 grid gap-5 xl:grid-cols-[1.15fr_1fr]"><div className="rounded-lg border border-[#E4E7EC] bg-white shadow-sm"><div className="border-b border-[#E4E7EC] px-4 py-3"><h2 className="text-base font-black">Current operational attention</h2><p className="text-xs font-semibold text-[#667085]">Live state, independent of the selected performance period.</p></div>{data.attention.length ? <div className="divide-y divide-[#E4E7EC]">{data.attention.map((item) => <Link key={item.label} to={item.to} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-[#F9FAFB] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#2E8B78]"><span className="text-sm font-bold">{item.label}</span><span className="rounded-full bg-[#FFFAEB] px-2 py-1 text-xs font-black text-[#B54708]">{item.count}</span></Link>)}</div> : <p className="p-5 text-sm font-semibold text-[#667085]">No current attention items.</p>}</div><div className="rounded-lg border border-[#E4E7EC] bg-white shadow-sm"><div className="border-b border-[#E4E7EC] px-4 py-3"><h2 className="text-base font-black">Supplier status</h2></div><div className="divide-y divide-[#E4E7EC]">{data.suppliers.map((supplier) => <Link key={supplier.supplier.id} to={`/admin/suppliers/${supplier.supplier.id.toLowerCase()}/overview`} className="grid grid-cols-[1fr_auto] gap-3 px-4 py-3 hover:bg-[#F9FAFB]"><div><p className="text-sm font-black">{supplier.supplier.displayName}</p><p className="mt-1 text-xs font-semibold text-[#667085]">{supplier.catalogue.productCount} products · {supplier.mappings.verified} verified mappings · {supplier.orders.attention} order alerts</p></div><AdminStatusBadge label={supplier.healthStatus} status={supplier.healthStatus} /></Link>)}</div></div></section>
+      <section className="mt-6 rounded-lg border border-[#E4E7EC] bg-white shadow-sm"><div className="flex items-center justify-between border-b border-[#E4E7EC] px-4 py-3"><h2 className="text-base font-black">Recent orders</h2><Link to="/admin/orders" className="text-sm font-black text-[#176B5C]">View all</Link></div>{data.recentOrders.length ? <div className="divide-y divide-[#E4E7EC]">{data.recentOrders.map((order) => <Link key={order.orderNumber} to={`/admin/orders/${order.orderNumber}`} className="grid gap-2 px-4 py-3 hover:bg-[#F9FAFB] sm:grid-cols-[1fr_160px_160px_120px] sm:items-center"><span className="text-sm font-black text-[#176B5C]">{order.orderNumber}</span><span className="text-xs font-semibold text-[#667085]">{new Date(order.createdAt).toLocaleString("en-ZA")}</span><span className="text-xs font-bold">{order.paymentStatus} · {order.orderStatus}</span><span className="text-right text-sm font-black">{formatCurrency(order.total, order.currency as "ZAR")}</span></Link>)}</div> : <p className="p-5 text-sm font-semibold text-[#667085]">No orders are available.</p>}</section>
+    </>}
+  </AdminShell>;
 }
+function Kpi({ label, value, helper, to, current }: { label: string; value: string; helper?: string; to?: string; current?: boolean }) { const content = <><p className="text-xs font-black uppercase text-[#667085]">{label}</p><p className="mt-2 text-2xl font-black">{value}</p>{helper && <p className="mt-2 text-xs font-semibold leading-4 text-[#667085]">{helper}</p>}{current && <p className="mt-1 text-[10px] font-black uppercase text-[#98A2B3]">Current attention</p>}</>; return to ? <Link to={to} className="rounded-lg border border-[#E4E7EC] bg-white p-4 shadow-sm transition hover:border-[#469D8B] focus:outline-none focus:ring-2 focus:ring-[#2E8B78]">{content}</Link> : <article className="rounded-lg border border-[#E4E7EC] bg-white p-4 shadow-sm">{content}</article>; }
+function BarChart({ title, rows, empty }: { title: string; rows: { label: string; value: number; display: string }[]; empty: string }) { const max = Math.max(...rows.map((row) => row.value), 0); return <article className="rounded-lg border border-[#E4E7EC] bg-white p-4 shadow-sm"><h2 className="text-base font-black">{title}</h2>{rows.length < 1 || max <= 0 ? <p className="mt-5 text-sm font-semibold text-[#667085]">{empty}</p> : <div className="mt-4 space-y-3">{rows.slice(-12).map((row) => <div key={row.label} className="grid grid-cols-[90px_1fr_auto] items-center gap-3"><span className="truncate text-xs font-bold text-[#667085]">{row.label}</span><div className="h-3 overflow-hidden rounded-sm bg-[#E4E7EC]"><div className="h-full bg-[#2E8B78]" style={{ width: `${Math.max(2, row.value / max * 100)}%` }} /></div><span className="text-xs font-black">{row.display}</span></div>)}</div>}</article>; }

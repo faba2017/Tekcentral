@@ -1,5 +1,5 @@
 import { type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { FiCheck, FiChevronLeft, FiChevronRight, FiLoader } from "react-icons/fi";
 import { products } from "@/data/catalogue";
 import {
@@ -10,6 +10,8 @@ import {
 } from "@/components/admin/AdminShell";
 import { SupplierWorkspaceNav } from "@/components/admin/SupplierWorkspaceNav";
 import { AdminToastRegion, type AdminToastMessage } from "@/components/admin/AdminToast";
+import { CjSupplierEvidencePanel } from "@/components/admin/CjSupplierEvidencePanel";
+import { ProductConfigurationLink } from "@/components/admin/ProductConfigurationWorkspace";
 import { ApiError, apiRequest } from "@/lib/api";
 import type { AsyncActionState, AdminToastVariant } from "@/lib/cj-workflow";
 import {
@@ -23,6 +25,7 @@ import {
   filterVariants,
   hasCategoryMismatch,
   isLatestSearchResponse,
+  isCjMappingSuggestionComplete,
   mappingSummaryForProduct,
   mappingStatusForProduct,
   readJsonArray,
@@ -30,6 +33,7 @@ import {
   recentCjViewedKey,
   type RecentCjProduct,
   selectedVariant,
+  shouldShowCjMappingEditor,
   shouldAutocomplete,
   shouldShowVariantFilter,
   suggestionCacheKey,
@@ -44,9 +48,11 @@ import { formatDateTime } from "@/lib/order-utils";
 import { usePageTitle } from "@/lib/page-title";
 import { supplierByCode } from "@/lib/supplier-registry";
 import type {
+  AdminInternalProduct,
   CjConnectionStatus,
   CjCategoriesResponse,
   CjCategoryNode,
+  CjLaunchReadinessResponse,
   CjProductSearchResponse,
   CjVariantDeliveryCheck,
   SupplierMappingsResponse,
@@ -59,6 +65,33 @@ type CjMappingSuggestionResponse = {
   tekcentralProduct: unknown;
   cjProduct: SupplierCatalogueProduct;
   variant?: SupplierCatalogueProduct["variants"][number];
+};
+type CjMappingPreview = {
+  proposalVersion?: number;
+  proposalFingerprint?: string;
+  action: "MAP_EXISTING" | "CREATE_NEW";
+  confidence: "HIGH" | "LOW";
+  reason: string;
+  existingProduct?: { id: string; name: string };
+  product: SupplierCatalogueProduct;
+  variant: SupplierCatalogueProduct["variants"][number];
+  proposal: {
+    name: string;
+    brand: string;
+    model: string;
+    categorySlug: string;
+    categoryName?: string;
+    subcategory: string;
+    proposedSku: string;
+    imageUrl?: string;
+    shortDescription: string;
+    categoryReviewRequired: boolean;
+    variantAttributes?: Record<string, string> | null;
+    evidenceNote?: string | null;
+    sourceReference?: string | null;
+    fieldConfidence?: Record<"title" | "brand" | "model" | "category" | "subcategory" | "description", "HIGH" | "MEDIUM" | "LOW"> | null;
+    evidenceSummary?: string[] | null;
+  };
 };
 
 type SuggestionCacheEntry = {
@@ -87,6 +120,7 @@ function adminErrorMessage(error: unknown, fallback: string) {
 
 export function AdminCjSupplierPage() {
   usePageTitle("CJ Dropshipping | TekCentral Ops");
+  const [searchParams, setSearchParams] = useSearchParams();
   const cjSupplier = supplierByCode("CJ");
   const [status, setStatus] = useState<CjConnectionStatus>();
   const [query, setQuery] = useState("");
@@ -119,6 +153,11 @@ export function AdminCjSupplierPage() {
   const [detailFeedback, setDetailFeedback] = useState<Feedback>();
   const [importFeedback, setImportFeedback] = useState<Record<string, Feedback>>({});
   const [mappingFeedback, setMappingFeedback] = useState<Feedback>();
+  const [mappingPreview, setMappingPreview] = useState<CjMappingPreview>();
+  const [mappingEditorOpen, setMappingEditorOpen] = useState(false);
+  const [adminProducts, setAdminProducts] = useState<AdminInternalProduct[]>([]);
+  const [launchData, setLaunchData] = useState<CjLaunchReadinessResponse>();
+  const [creationDraft, setCreationDraft] = useState({ name: "", brand: "", model: "", categorySlug: "", subcategory: "", shortDescription: "", evidenceNote: "", sourceReference: "" });
   const [deliveryCheck, setDeliveryCheck] = useState<CjVariantDeliveryCheck>();
   const [deliveryCheckFeedback, setDeliveryCheckFeedback] = useState<Feedback>();
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readJsonArray<string>(recentCjSearchesKey));
@@ -130,6 +169,13 @@ export function AdminCjSupplierPage() {
   const autocompleteSequence = useRef(0);
   const suggestionCache = useRef(new Map<string, SuggestionCacheEntry>());
   const detailRef = useRef<HTMLDivElement>(null);
+  const deliveryCheckPending = useRef(false);
+  const deliveryCooldownTimer = useRef<number>();
+  const [deliveryCooldownActive, setDeliveryCooldownActive] = useState(false);
+
+  useEffect(() => () => {
+    if (deliveryCooldownTimer.current) window.clearTimeout(deliveryCooldownTimer.current);
+  }, []);
 
   const addToast = (variant: AdminToastVariant, message: string) => {
     toastCounter.current += 1;
@@ -164,13 +210,17 @@ export function AdminCjSupplierPage() {
       apiRequest<{ products: SupplierCatalogueProduct[] }>("/api/admin/suppliers/cj/products"),
       apiRequest<SupplierMappingsResponse>("/api/admin/supplier-mappings?supplier=CJ"),
       apiRequest<CjCategoriesResponse>("/api/admin/suppliers/cj/categories"),
+      apiRequest<{ products: AdminInternalProduct[] }>("/api/admin/products"),
+      apiRequest<CjLaunchReadinessResponse>("/api/admin/suppliers/cj/launch-readiness"),
     ])
-      .then(([statusResponse, importedResponse, mappingsResponse, categoriesResponse]) => {
+      .then(([statusResponse, importedResponse, mappingsResponse, categoriesResponse, adminProductsResponse, launchResponse]) => {
         setStatus(statusResponse);
         setImportedProducts(importedResponse.products);
         setMappings(mappingsResponse.mappings);
         setCategories(categoriesResponse.categories);
         setCategoryGroups(categoriesResponse.groups ?? []);
+        setAdminProducts(adminProductsResponse.products);
+        setLaunchData(launchResponse);
       })
       .catch(() => {
         setStatus(undefined);
@@ -180,6 +230,21 @@ export function AdminCjSupplierPage() {
         setCategoryGroups([]);
       });
   }, []);
+
+  useEffect(() => {
+    const supplierProductId = searchParams.get("pid");
+    const supplierVariantId = searchParams.get("vid");
+    if (!supplierProductId || !supplierVariantId || selectedProduct?.supplierProductId === supplierProductId) return;
+    const product = importedProducts.find((item) => item.supplierProductId === supplierProductId);
+    if (!product || !product.variants.some((variant) => variant.supplierVariantId === supplierVariantId)) return;
+    const timeout = window.setTimeout(() => {
+      setSelectedProduct(product);
+      setSelectedVariantId(supplierVariantId);
+      setDiscoveryTab("imported");
+      detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [importedProducts, searchParams, selectedProduct?.supplierProductId]);
 
   const selectedTekProduct = products.find((product) => product.id === tekcentralProductId);
   const selectedCjVariant = selectedVariant(selectedProduct, selectedVariantId);
@@ -191,21 +256,33 @@ export function AdminCjSupplierPage() {
     : recentViewed.slice(0, 6);
   const filteredResults = results;
   const selectedProductMappings = mappings.filter(
-    (mapping) => mapping.supplierProductId === selectedProduct?.supplierProductId,
+    (mapping) => mapping.supplierCode === "CJ" && mapping.supplierProductId === selectedProduct?.supplierProductId && (!selectedVariantId || mapping.supplierVariantId === selectedVariantId) && !["SUPERSEDED", "REJECTED"].includes(mapping.status ?? ""),
   );
-  const hasSuggestedMapping = selectedProductMappings.some((mapping) => mapping.status === "SUGGESTED");
-  const hasVerifiedMapping = selectedProductMappings.some((mapping) => mapping.status === "VERIFIED");
+  const activeSelectedMapping = [...selectedProductMappings].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  const hasVerifiedMapping = activeSelectedMapping?.status === "VERIFIED";
+  const hasSuggestedMapping = isCjMappingSuggestionComplete(activeSelectedMapping?.status);
+  const mappedAdminProduct = adminProducts.find((product) => product.id === activeSelectedMapping?.productId);
+  const selectedLaunchRow = launchData?.rows.find((row) => row.product.supplierProductId === selectedProduct?.supplierProductId && row.variant.supplierVariantId === selectedVariantId);
   const canSuggest = canSuggestCjMapping({ selectedProduct, selectedVariantId, tekcentralProductId });
   const isSelectedImported = Boolean(selectedProduct && importedProducts.some((item) => item.supplierProductId === selectedProduct.supplierProductId));
-  const selectedMappingStatus = selectedProduct ? mappingStatusForProduct(selectedProduct, mappings) : "UNMAPPED";
-  const selectedMappingSummary = selectedProduct ? mappingSummaryForProduct(selectedProduct, mappings) : "Unmapped";
+  const selectedMappingStatus = selectedProduct ? selectedVariantId ? activeSelectedMapping?.status ?? "UNMAPPED" : mappingStatusForProduct(selectedProduct, mappings) : "UNMAPPED";
+  const selectedMappingSummary = selectedProduct ? selectedVariantId ? (activeSelectedMapping?.status ?? "UNMAPPED").replace(/_/g, " ").toLowerCase().replace(/^./, (value) => value.toUpperCase()) : mappingSummaryForProduct(selectedProduct, mappings) : "Unmapped";
   const selectedSupplierStatus = selectedProduct ? supplierStatusForProduct(selectedProduct) : "needs-refresh";
   const showVariantFilter = shouldShowVariantFilter(selectedProduct?.variants ?? []);
   const categoryWarning = hasCategoryMismatch(selectedProduct, selectedTekProduct);
   const selectedVariantDeliveryWarning =
     deliveryCheck &&
     deliveryCheck.supplierVariantId === selectedVariantId &&
-    deliveryCheck.status !== "AVAILABLE";
+    deliveryCheck.status === "NO_ROUTE";
+  const refreshSelectedEvidence = async () => {
+    const [launchResponse, productsResponse] = await Promise.all([
+      apiRequest<CjLaunchReadinessResponse>("/api/admin/suppliers/cj/launch-readiness"),
+      apiRequest<{ products: SupplierCatalogueProduct[] }>("/api/admin/suppliers/cj/products"),
+    ]);
+    setLaunchData(launchResponse);
+    setImportedProducts(productsResponse.products);
+    setSelectedProduct((current) => productsResponse.products.find((item) => item.supplierProductId === current?.supplierProductId) ?? current);
+  };
 
   const clearSelection = () => {
     setSelectedProduct(undefined);
@@ -217,12 +294,18 @@ export function AdminCjSupplierPage() {
     setMappingFeedback(undefined);
     setDeliveryCheck(undefined);
     setDeliveryCheckFeedback(undefined);
+    setDeliveryCooldownActive(false);
+    if (deliveryCooldownTimer.current) window.clearTimeout(deliveryCooldownTimer.current);
   };
 
   const selectVariant = (supplierVariantId: string) => {
     setSelectedVariantId(supplierVariantId);
     setDeliveryCheck(undefined);
     setDeliveryCheckFeedback(undefined);
+    setDeliveryCooldownActive(false);
+    if (deliveryCooldownTimer.current) window.clearTimeout(deliveryCooldownTimer.current);
+    setMappingPreview(undefined);
+    setMappingEditorOpen(false);
   };
 
   const loadCategories = async (scope: "technology" | "all") => {
@@ -502,6 +585,23 @@ export function AdminCjSupplierPage() {
     }
   };
 
+  const refreshVariantAvailability = async (product: SupplierCatalogueProduct, variant: SupplierCatalogueProduct["variants"][number]) => {
+    setLoading((current) => ({ ...current, refreshAvailabilityId: variant.supplierVariantId }));
+    try {
+      const response = await apiRequest<{ product: SupplierCatalogueProduct }>(
+        `/api/admin/suppliers/cj/products/${encodeURIComponent(product.supplierProductId)}/variants/${encodeURIComponent(variant.supplierVariantId)}/refresh-availability`,
+        { method: "POST", body: JSON.stringify({ supplierVariantSku: variant.supplierVariantSku }) },
+      );
+      setImportedProducts((current) => current.map((item) => item.supplierProductId === response.product.supplierProductId ? response.product : item));
+      setSelectedProduct(response.product);
+      addToast("success", "CJ availability refreshed for the exact variant.");
+    } catch (error) {
+      addToast("error", adminErrorMessage(error, "CJ availability refresh failed."));
+    } finally {
+      setLoading((current) => ({ ...current, refreshAvailabilityId: undefined }));
+    }
+  };
+
   const viewProduct = async (product: SupplierCatalogueProduct) => {
     setLoading((current) => ({ ...current, viewingProductId: product.supplierProductId }));
     setDetailFeedback({ variant: "info", message: "Loading product..." });
@@ -552,24 +652,70 @@ export function AdminCjSupplierPage() {
     }
   };
 
+  const previewExactMapping = async () => {
+    if (!selectedProduct || !selectedCjVariant) return;
+    setLoading((current) => ({ ...current, mappingPreview: true }));
+    setMappingFeedback(undefined);
+    try {
+      const preview = await apiRequest<CjMappingPreview>("/api/admin/suppliers/cj/mapping-preview", { method: "POST", cache: "no-store", body: JSON.stringify({ supplierProductId: selectedProduct.supplierProductId, supplierVariantId: selectedCjVariant.supplierVariantId }) });
+      if (preview.proposalVersion !== 2) throw new ApiError("The CJ Product suggestion service is out of date. Restart the backend and preview again.", 409, "CJ_PREVIEW_VERSION_STALE");
+      setMappingPreview(preview);
+      setCreationDraft({ name: preview.proposal.name, brand: preview.proposal.brand, model: preview.proposal.model, categorySlug: preview.proposal.categorySlug, subcategory: preview.proposal.subcategory, shortDescription: preview.proposal.shortDescription, evidenceNote: preview.proposal.evidenceNote ?? "", sourceReference: preview.proposal.sourceReference ?? `CJ PID ${preview.product.supplierProductId} / VID ${preview.variant.supplierVariantId}` });
+    } catch (error) {
+      setMappingFeedback({ variant: "error", message: adminErrorMessage(error, "CJ mapping preview failed.") });
+    } finally {
+      setLoading((current) => ({ ...current, mappingPreview: false }));
+    }
+  };
+
+  const applyExactMapping = async () => {
+    if (!selectedProduct || !selectedCjVariant || !mappingPreview) return;
+    setLoading((current) => ({ ...current, mappingApply: true }));
+    try {
+      const response = await apiRequest<{ mapping: SupplierProductMapping; product: AdminInternalProduct; created: boolean }>("/api/admin/suppliers/cj/products/create", { method: "POST", body: JSON.stringify({ supplierProductId: selectedProduct.supplierProductId, supplierVariantId: selectedCjVariant.supplierVariantId, name: creationDraft.name, brand: creationDraft.brand, model: creationDraft.model, categorySlug: creationDraft.categorySlug, subcategory: creationDraft.subcategory || undefined, shortDescription: creationDraft.shortDescription, evidenceNote: creationDraft.evidenceNote, sourceReference: creationDraft.sourceReference, confirmed: true }) });
+      const nextMappings = upsertMapping(mappings, response.mapping);
+      setMappings(nextMappings);
+      setAdminProducts((current) => current.some((product) => product.id === response.product.id) ? current.map((product) => product.id === response.product.id ? response.product : product) : [response.product, ...current]);
+      setLaunchData(await apiRequest<CjLaunchReadinessResponse>("/api/admin/suppliers/cj/launch-readiness"));
+      setStatus((current) => updatedStatusCounts(current, nextMappings));
+      setMappingFeedback({ variant: "success", message: response.created ? "TekCentral product created and exact CJ variant mapping verified." : "Exact CJ variant mapped to the existing TekCentral product." });
+      setMappingPreview(undefined);
+      setMappingEditorOpen(false);
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.set("productSetup", response.product.id);
+      setSearchParams(nextParams);
+    } catch (error) {
+      setMappingFeedback({ variant: "error", message: adminErrorMessage(error, "CJ exact mapping could not be applied.") });
+    } finally {
+      setLoading((current) => ({ ...current, mappingApply: false }));
+    }
+  };
+
   const checkDeliveryToSouthAfrica = async () => {
     if (!selectedCjVariant) {
       setDeliveryCheckFeedback({ variant: "warning", message: "Select an exact CJ variant first." });
       return;
     }
+    if (deliveryCheckPending.current || deliveryCooldownActive) return;
+    deliveryCheckPending.current = true;
     setLoading((current) => ({ ...current, checkingDelivery: true }));
-    setDeliveryCheck(undefined);
-    setDeliveryCheckFeedback({ variant: "info", message: "Checking delivery to South Africa..." });
+    setDeliveryCheckFeedback({ variant: "info", message: "Checking CJ delivery..." });
     try {
       const response = await apiRequest<{ deliveryCheck: CjVariantDeliveryCheck }>("/api/admin/suppliers/cj/delivery-check", {
         method: "POST",
-        body: JSON.stringify({ supplierVariantId: selectedCjVariant.supplierVariantId }),
+        body: JSON.stringify({ supplierProductId: selectedProduct?.supplierProductId, supplierVariantId: selectedCjVariant.supplierVariantId }),
       });
       setDeliveryCheck(response.deliveryCheck);
       setDeliveryCheckFeedback(undefined);
+      if (response.deliveryCheck.status === "RATE_LIMITED") {
+        setDeliveryCooldownActive(true);
+        if (deliveryCooldownTimer.current) window.clearTimeout(deliveryCooldownTimer.current);
+        deliveryCooldownTimer.current = window.setTimeout(() => setDeliveryCooldownActive(false), (response.deliveryCheck.retryAfterSeconds ?? 60) * 1_000);
+      }
     } catch (error) {
       setDeliveryCheckFeedback({ variant: "error", message: adminErrorMessage(error, "CJ delivery check failed.") });
     } finally {
+      deliveryCheckPending.current = false;
       setLoading((current) => ({ ...current, checkingDelivery: false }));
     }
   };
@@ -969,19 +1115,20 @@ export function AdminCjSupplierPage() {
                         <button
                           type="button"
                           onClick={checkDeliveryToSouthAfrica}
-                          disabled={loading.checkingDelivery}
+                          disabled={loading.checkingDelivery || deliveryCooldownActive}
                           className="rounded-md border border-[#E4E7EC] px-3 py-2 text-xs font-black disabled:cursor-wait disabled:bg-[#E4E7EC] disabled:text-[#727986]"
                         >
-                          {loading.checkingDelivery ? "Checking..." : "Check delivery to South Africa"}
+                          {loading.checkingDelivery ? "Checking..." : deliveryCooldownActive ? "Try again shortly" : "Check delivery to South Africa"}
                         </button>
                       </div>
                       {deliveryCheckFeedback && <div className="mt-3"><AdminFeedback {...deliveryCheckFeedback} /></div>}
+                      {!deliveryCheckFeedback && !deliveryCheck && <p className="mt-3 text-xs font-semibold text-[#727986]">Not checked</p>}
                       {deliveryCheck && deliveryCheck.supplierVariantId === selectedCjVariant.supplierVariantId && (
                         <div className={`mt-3 rounded-md border px-3 py-2 text-xs font-semibold ${deliveryCheck.status === "AVAILABLE" ? "border-[#ABEFC6] bg-[#ECFDF3] text-[#067647]" : "border-[#FEDF89] bg-[#FFFAEB] text-[#B54708]"}`}>
                           <p className="font-black">{deliveryCheck.message}</p>
-                          <p className="mt-1">Checked: {formatDateTime(deliveryCheck.checkedAt)}</p>
+                          <p className="mt-1">{deliveryCheck.cached ? "Using recent check from" : "Last checked"}: {formatDateTime(deliveryCheck.checkedAt)}</p>
                           {deliveryCheck.sourceCountries.length > 0 && <p>Source: {deliveryCheck.sourceCountries.join(", ")}</p>}
-                          {deliveryCheck.status !== "AVAILABLE" && deliveryCheck.diagnosticReasons && deliveryCheck.diagnosticReasons.length > 0 && (
+                          {!["AVAILABLE", "RATE_LIMITED", "TEMPORARY_ERROR"].includes(deliveryCheck.status) && deliveryCheck.diagnosticReasons && deliveryCheck.diagnosticReasons.length > 0 && (
                             <div className="mt-2 grid gap-1">
                               {deliveryCheck.diagnosticReasons.map((reason) => (
                                 <p key={reason}>{reason}</p>
@@ -1041,6 +1188,9 @@ export function AdminCjSupplierPage() {
                         <button type="button" onClick={() => refreshProduct(selectedProduct)} disabled={loading.refreshProductId === selectedProduct.supplierProductId} className="rounded-md border border-[#E4E7EC] px-3 py-2 text-sm font-black disabled:cursor-wait disabled:text-[#727986]">
                           {loading.refreshProductId === selectedProduct.supplierProductId ? "Refreshing..." : "Refresh"}
                         </button>
+                        {selectedCjVariant && <button type="button" onClick={() => void refreshVariantAvailability(selectedProduct, selectedCjVariant)} disabled={loading.refreshAvailabilityId === selectedCjVariant.supplierVariantId} className="rounded-md border border-[#E4E7EC] px-3 py-2 text-sm font-black disabled:cursor-wait disabled:text-[#727986]">
+                          {loading.refreshAvailabilityId === selectedCjVariant.supplierVariantId ? "Refreshing availability..." : "Refresh availability"}
+                        </button>}
                       </>
                     ) : (
                       <button type="button" onClick={() => importProduct(selectedProduct)} disabled={loading.importingProductId === selectedProduct.supplierProductId} className="rounded-md bg-[var(--tek-accent)] px-3 py-2 text-sm font-black text-[var(--tek-accent-ink)] disabled:cursor-wait disabled:opacity-70">
@@ -1056,7 +1206,37 @@ export function AdminCjSupplierPage() {
                     <AdminStatusBadge label={selectedMappingSummary} status={selectedMappingStatus} />
                   </div>
                   {selectedCjVariant ? (
-                    <div className="mt-3">
+                    !shouldShowCjMappingEditor(activeSelectedMapping?.status, mappingEditorOpen) ? (
+                      <div className="mt-3 grid gap-3">
+                        <section className="rounded-md border border-[#B8E3DA] bg-[#F0FBF8] p-4">
+                          <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-black uppercase text-[#176B5C]">Mapped TekCentral Product</p><h5 className="mt-1 text-base font-black">{mappedAdminProduct?.name ?? activeSelectedMapping?.productId}</h5><p className="mt-1 text-xs font-semibold text-[#3F4652]">{mappedAdminProduct?.sku ?? "SKU unavailable"}{mappedAdminProduct?.brand ? ` · ${mappedAdminProduct.brand}` : ""}{mappedAdminProduct?.category ? ` · ${mappedAdminProduct.category}${mappedAdminProduct.subcategory ? ` / ${mappedAdminProduct.subcategory}` : ""}` : ""}</p></div><AdminStatusBadge label="Verified" status="VERIFIED" /></div>
+                          <dl className="mt-3 grid gap-2 text-xs font-semibold text-[#3F4652] sm:grid-cols-2"><div><dt className="font-black">CJ PID</dt><dd className="break-all">{selectedProduct.supplierProductId}</dd></div><div><dt className="font-black">Exact CJ VID</dt><dd className="break-all">{selectedCjVariant.supplierVariantId}</dd></div><div><dt className="font-black">Variant SKU</dt><dd>{selectedCjVariant.supplierVariantSku ?? "Unavailable"}</dd></div><div><dt className="font-black">Mapping evidence</dt><dd>{activeSelectedMapping?.evidence?.slice(-1)[0] ?? "Verified by staff"}</dd></div></dl>
+                          <div className="mt-4 flex flex-wrap gap-2">{activeSelectedMapping?.productId && <ProductConfigurationLink productId={activeSelectedMapping.productId} className="rounded-md bg-[var(--tek-accent)] px-3 py-2 text-sm font-black text-[var(--tek-accent-ink)]">Continue Product setup</ProductConfigurationLink>}<button type="button" onClick={() => setMappingEditorOpen(true)} className="rounded-md border border-[#E4E7EC] bg-white px-3 py-2 text-sm font-black">Change mapping</button></div>
+                        </section>
+                        <CjSupplierEvidencePanel key={selectedCjVariant.supplierVariantId} product={selectedProduct} variant={selectedCjVariant} row={selectedLaunchRow} deliveryStatus={deliveryCheck?.supplierVariantId === selectedCjVariant.supplierVariantId ? deliveryCheck.status : undefined} onSaved={refreshSelectedEvidence} />
+                      </div>
+                    ) : (
+                    <div className="mt-3 grid gap-4">
+                      {hasVerifiedMapping && <div className="rounded-md border border-[#FEDF89] bg-[#FFFAEB] p-3 text-xs font-semibold text-[#B54708]"><p className="font-black">You are changing a verified mapping.</p><p className="mt-1">The current mapping remains active until a replacement is confirmed. Previous mapping evidence will be preserved as superseded history.</p><button type="button" onClick={() => { setMappingEditorOpen(false); setMappingPreview(undefined); }} className="mt-3 rounded-md border border-[#E4E7EC] bg-white px-3 py-2 font-black text-[#3F4652]">Cancel</button></div>}
+                      <section className="rounded-md border border-[#B8E3DA] bg-[#F0FBF8] p-3">
+                      <h5 className="text-sm font-black">Create new TekCentral Product</h5>
+                      <p className="mt-1 text-xs font-semibold text-[#727986]">Use this path when the exact sellable Product does not exist in TekCentral.</p>
+                      {!mappingPreview && <button type="button" onClick={() => void previewExactMapping()} disabled={loading.mappingPreview} className="mt-3 w-full rounded-md border border-[#469D8B] bg-white px-3 py-2 text-sm font-black text-[#176B5C] disabled:opacity-60">{loading.mappingPreview ? "Preparing preview..." : "Preview suggested TekCentral Product"}</button>}
+                      {mappingPreview && <div className="mt-3 rounded-md border border-[#E4E7EC] bg-[#F6F7F9] p-3 text-xs font-semibold text-[#3F4652]">
+                        <div className="flex items-center justify-between gap-2"><p className="font-black">Suggested TekCentral Product</p><AdminStatusBadge label={`${mappingPreview.confidence} confidence`} status={mappingPreview.confidence === "HIGH" ? "APPROVED" : "PENDING"} /></div>
+                        <p className="mt-2">{mappingPreview.reason}</p>
+                        {mappingPreview.existingProduct && <p className="mt-2 font-black">Existing product: {mappingPreview.existingProduct.name}</p>}
+                        {mappingPreview.action === "CREATE_NEW" && <div className="mt-3 grid gap-2"><label className="font-black">Public product title<input value={creationDraft.name} onChange={(event) => setCreationDraft({ ...creationDraft, name: event.target.value })} className="mt-1 w-full px-3" /></label><label className="font-black">Brand<input value={creationDraft.brand} onChange={(event) => setCreationDraft({ ...creationDraft, brand: event.target.value })} className="mt-1 w-full px-3" /></label><label className="font-black">Model<input value={creationDraft.model} onChange={(event) => setCreationDraft({ ...creationDraft, model: event.target.value })} placeholder="Leave blank if unknown" className="mt-1 w-full px-3" /></label><label className="font-black">TekCentral category<select value={creationDraft.categorySlug} onChange={(event) => setCreationDraft({ ...creationDraft, categorySlug: event.target.value })} className="mt-1 w-full px-3"><option value="">Select category</option><option value="computers">Computers</option><option value="networking">Networking</option><option value="printing-office">Printing & Office</option><option value="security">Security</option><option value="power">Power</option><option value="smart-tech">Smart Tech</option><option value="accessories">Accessories</option></select></label><label className="font-black">Subcategory<input value={creationDraft.subcategory} onChange={(event) => setCreationDraft({ ...creationDraft, subcategory: event.target.value })} className="mt-1 w-full px-3" /></label></div>}
+                        {mappingPreview.action === "CREATE_NEW" && <label className="mt-3 block font-black">Safe description candidate<textarea value={creationDraft.shortDescription} onChange={(event) => setCreationDraft({ ...creationDraft, shortDescription: event.target.value })} rows={3} className="mt-1 w-full rounded-md border border-[#E4E7EC] px-3 py-2 font-semibold" /></label>}
+                        {mappingPreview.action === "CREATE_NEW" && Object.keys(mappingPreview.proposal.fieldConfidence ?? {}).length > 0 && <p className="mt-2 text-[11px] font-semibold text-[#727986]">Proposal confidence: {Object.entries(mappingPreview.proposal.fieldConfidence ?? {}).map(([field, confidence]) => `${field} ${confidence}`).join(" · ")}</p>}
+                        {mappingPreview.action === "CREATE_NEW" && <div className="mt-3 grid gap-3"><div className="rounded-md bg-white p-3"><p><strong>Proposed SKU:</strong> {mappingPreview.proposal.proposedSku}</p><p className="mt-1 break-all"><strong>Exact CJ identity:</strong> PID {mappingPreview.product.supplierProductId} · VID {mappingPreview.variant.supplierVariantId}</p>{Object.keys(mappingPreview.proposal.variantAttributes ?? {}).length > 0 ? Object.entries(mappingPreview.proposal.variantAttributes ?? {}).map(([key, value]) => <p key={key}>{key}: {value}</p>) : <p className="mt-1 text-[#727986]">No structured attributes available.</p>}</div>{mappingPreview.proposal.imageUrl && <img src={mappingPreview.proposal.imageUrl} alt="CJ product candidate" className="h-24 w-24 rounded-md object-cover" />}<div><p className="font-black">Safe description candidate</p><p className="mt-1">{mappingPreview.proposal.shortDescription}</p></div>{(mappingPreview.proposal.evidenceSummary ?? []).length > 0 && <div><p className="font-black">Evidence summary</p><ul className="mt-1 list-disc space-y-1 pl-4">{(mappingPreview.proposal.evidenceSummary ?? []).map((item) => <li key={item}>{item}</li>)}</ul></div>}</div>}
+                        <div className="mt-3 grid gap-2"><label className="font-black">Evidence note<input value={creationDraft.evidenceNote} onChange={(event) => setCreationDraft({ ...creationDraft, evidenceNote: event.target.value })} className="mt-1 w-full px-3" /><span className="mt-1 block font-semibold text-[#727986]">Used internally to record why this supplier item was confirmed as the TekCentral Product. Prefilled from CJ evidence and editable by staff.</span></label><label className="font-black">Source/reference<input value={creationDraft.sourceReference} onChange={(event) => setCreationDraft({ ...creationDraft, sourceReference: event.target.value })} className="mt-1 w-full px-3" /></label></div>
+                        <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => setMappingPreview(undefined)} className="rounded-md border border-[#E4E7EC] bg-white px-3 py-2 font-black">Cancel</button><button type="button" onClick={() => void applyExactMapping()} disabled={loading.mappingApply || !creationDraft.evidenceNote.trim() || !creationDraft.sourceReference.trim() || (mappingPreview.action === "CREATE_NEW" && (!creationDraft.name.trim() || !creationDraft.categorySlug))} className="rounded-md bg-[var(--tek-accent)] px-3 py-2 font-black disabled:cursor-not-allowed disabled:bg-[#D0D5DD]">{mappingPreview.action === "MAP_EXISTING" ? "Map exact existing Product" : "Create TekCentral Product & Map"}</button></div>
+                      </div>}
+                      </section>
+                      <section className="rounded-md border border-[#E4E7EC] bg-white p-3">
+                      <h5 className="text-sm font-black">Map to existing TekCentral Product</h5>
+                      <p className="mt-1 text-xs font-semibold text-[#727986]">Search and select an existing exact Product when it represents the same sellable item.</p>
                       <label className="block text-sm font-black">
                         Search TekCentral products
                         <input value={tekcentralSearch} onChange={(event) => setTekcentralSearch(event.target.value)} placeholder="USB cable, charger, network cable..." className="mt-2 h-10 w-full rounded-md border border-[#E4E7EC] px-3 text-sm font-semibold" />
@@ -1076,9 +1256,10 @@ export function AdminCjSupplierPage() {
                             {tekcentralProductId === product.id && <FiCheck className="mt-1 shrink-0 text-[var(--tek-accent)]" aria-hidden="true" />}
                           </button>
                         ))}
-                        {visibleTekProducts.length === 0 && <p className="p-3 text-sm font-semibold text-[#727986]">Enter at least 2 characters to search TekCentral products.</p>}
+                        {visibleTekProducts.length === 0 && tekcentralSearch.trim().length < 2 && <p className="p-3 text-sm font-semibold text-[#727986]">Enter at least 2 characters to search TekCentral products.</p>}
+                        {visibleTekProducts.length === 0 && tekcentralSearch.trim().length >= 2 && <div className="p-3"><p className="text-sm font-semibold text-[#727986]">No matching TekCentral Product found.</p><button type="button" onClick={() => void previewExactMapping()} disabled={loading.mappingPreview} className="mt-3 rounded-md border border-[#469D8B] px-3 py-2 text-xs font-black text-[#176B5C] disabled:opacity-50">Create a new TekCentral Product from this CJ item</button></div>}
                       </div>
-                      {!tekcentralProductId && <p className="mt-3 text-xs font-black text-[#B54708]">Select a TekCentral product before creating a mapping.</p>}
+                      {!tekcentralProductId && <p className="mt-3 text-xs font-black text-[#727986]">Choose an exact existing Product to continue with this path.</p>}
                       {categoryWarning && <p className="mt-3 rounded-md border border-[#FEDF89] bg-[#FFFAEB] px-3 py-2 text-xs font-black text-[#B54708]">These products appear to be from different categories. Verify before mapping.</p>}
                       {selectedVariantDeliveryWarning && <p className="mt-3 rounded-md border border-[#FEDF89] bg-[#FFFAEB] px-3 py-2 text-xs font-black text-[#B54708]">Not currently deliverable to South Africa via CJ.</p>}
                       {mappingFeedback && <div className="mt-3"><AdminFeedback {...mappingFeedback} /></div>}
@@ -1091,9 +1272,11 @@ export function AdminCjSupplierPage() {
                         </div>
                       )}
                       <button type="button" onClick={suggestMapping} disabled={!canSuggest || loading.suggesting} className="mt-4 inline-flex rounded-md bg-[var(--tek-accent)] px-4 py-2 text-sm font-black text-[var(--tek-accent-ink)] disabled:cursor-not-allowed disabled:bg-[#E4E7EC] disabled:text-[#727986]">
-                        {loading.suggesting ? "Creating..." : "Create Suggested Mapping"}
+                        {loading.suggesting ? "Creating..." : "Map selected Product for review"}
                       </button>
+                      </section>
                     </div>
+                    )
                   ) : (
                     <p className="mt-3 text-sm font-semibold text-[#727986]">Select the exact CJ variant to continue mapping.</p>
                   )}

@@ -1,130 +1,40 @@
-import { Link } from "react-router-dom";
-import {
-  FiBookmark,
-  FiBriefcase,
-  FiMapPin,
-  FiPackage,
-  FiRefreshCw,
-  FiShoppingBag,
-  FiUser,
-} from "react-icons/fi";
+import { type FormEvent, useState } from "react";
+import { FiEye, FiEyeOff, FiShield } from "react-icons/fi";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { AccountDashboard } from "@/components/account/AccountDashboard";
+import { ApiError, apiRequest } from "@/lib/api";
 import { usePageTitle } from "@/lib/page-title";
+import { useCustomerAuth } from "@/state/customer-auth";
+import { executeRecaptcha } from "@/lib/recaptcha";
 
-const plannedCapabilities = [
-  {
-    label: "Orders",
-    description: "Track purchases and order history.",
-    icon: FiPackage,
-    to: "/orders",
-  },
-  { label: "Saved addresses", description: "Prepare delivery details for checkout.", icon: FiMapPin },
-  { label: "Returns", description: "Keep returns and warranty requests organized.", icon: FiRefreshCw },
-  { label: "Quotes", description: "Review business solution requests.", icon: FiBriefcase },
-  { label: "Saved products", description: "Build shortlists for home, work and business.", icon: FiBookmark },
-];
+type Mode = "login" | "register" | "forgot";
+const fieldClass = "h-12 w-full rounded-md border border-[#D0D5DD] bg-[#F8FAFC] px-4 text-sm font-semibold outline-none transition focus:border-[var(--tek-accent)] focus:bg-white focus:ring-4 focus:ring-[rgba(70,157,139,0.14)]";
+const messageFor = (error: unknown) => error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Something went wrong. Please try again.";
 
+function PasswordInput({ name, label, autoComplete }: { name: string; label: string; autoComplete: string }) {
+  const [visible, setVisible] = useState(false);
+  return <label className="grid min-w-0 gap-2 text-sm font-black">{label}<span className="relative block min-w-0"><input name={name} required minLength={10} type={visible ? "text" : "password"} autoComplete={autoComplete} className={`${fieldClass} pr-12`} /><button type="button" onClick={() => setVisible((value) => !value)} className="absolute right-1 top-1 grid h-10 w-10 place-items-center rounded text-[#667085]" aria-label={`${visible ? "Hide" : "Show"} ${label.toLowerCase()}`}>{visible ? <FiEyeOff /> : <FiEye />}</button></span></label>;
+}
+function TextField({ name, label, type = "text", autoComplete, defaultValue }: { name: string; label: string; type?: string; autoComplete: string; defaultValue?: string }) {
+  return <label className="grid min-w-0 gap-2 text-sm font-black">{label}<input name={name} required type={type} autoComplete={autoComplete} defaultValue={defaultValue} className={fieldClass} /></label>;
+}
 export function AccountPage() {
   usePageTitle("Account | TekCentral");
-
-  return (
-    <section className="bg-[radial-gradient(circle_at_88%_12%,rgba(70,157,139,0.14),transparent_30%),linear-gradient(135deg,#F8FAFA_0%,#EEF5F3_100%)] px-4 py-12 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-6xl">
-        <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-          <div className="rounded-lg bg-[radial-gradient(circle_at_80%_18%,rgba(70,157,139,0.24),transparent_34%),linear-gradient(135deg,#080A0A_0%,#101716_60%,#10231F_100%)] p-6 text-white shadow-sm sm:p-8">
-            <p className="text-sm font-black uppercase tracking-[0.18em] text-[var(--tek-accent)]">
-              TekCentral Account
-            </p>
-            <h1 className="mt-4 text-4xl font-black leading-tight sm:text-5xl">
-              Your technology buying profile.
-            </h1>
-            <p className="mt-5 text-base leading-7 text-white/72">
-              Save products, manage technology planning and prepare for a smoother
-              TekCentral shopping experience.
-            </p>
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <button
-                type="button"
-                className="rounded-md border border-white/18 bg-white/10 px-5 py-3 text-sm font-black text-white opacity-80"
-                aria-disabled="true"
-              >
-                Sign in
-              </button>
-              <button
-                type="button"
-                className="rounded-md bg-[var(--tek-accent)] px-5 py-3 text-sm font-black text-[var(--tek-accent-ink)] opacity-80"
-                aria-disabled="true"
-              >
-                Create account
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-[#E4E7EC] bg-white p-6 shadow-sm sm:p-8">
-            <div className="flex items-start gap-4">
-              <span className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-[rgba(70,157,139,0.14)] text-[var(--tek-accent-ink)]">
-                <FiUser aria-hidden="true" />
-              </span>
-              <div>
-                <h2 className="text-2xl font-black text-[#0A0A0A]">
-                  Account services for smarter shopping.
-                </h2>
-                <p className="mt-2 text-sm leading-6 text-[#3F4652]">
-                  Keep your orders, quotes, returns and saved products in one place.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-6 grid gap-3 sm:grid-cols-2">
-              {plannedCapabilities.map((item) => {
-                const Icon = item.icon;
-                const content = (
-                  <>
-                    <Icon className="text-[var(--tek-accent)]" aria-hidden="true" />
-                    <h3 className="mt-3 text-sm font-black text-[#0A0A0A]">
-                      {item.label}
-                    </h3>
-                    <p className="mt-1 text-sm leading-6 text-[#727986]">
-                      {item.description}
-                    </p>
-                  </>
-                );
-                if ("to" in item && item.to) {
-                  return (
-                    <Link
-                      key={item.label}
-                      to={item.to}
-                      className="rounded-md bg-[#F6F7F9] p-4 transition hover:bg-[#EEF5F3]"
-                    >
-                      {content}
-                    </Link>
-                  );
-                }
-                return (
-                  <article key={item.label} className="rounded-md bg-[#F6F7F9] p-4">
-                    {content}
-                  </article>
-                );
-              })}
-            </div>
-
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Link
-                to="/shop"
-                className="inline-flex items-center justify-center gap-2 rounded-md bg-[var(--tek-accent)] px-5 py-3 text-sm font-black text-[var(--tek-accent-ink)] transition hover:bg-[var(--tek-accent-hover)]"
-              >
-                <FiShoppingBag aria-hidden="true" />
-                Continue Shopping
-              </Link>
-              <Link
-                to="/zeus"
-                className="inline-flex items-center justify-center rounded-md border border-[#E4E7EC] px-5 py-3 text-sm font-black text-[#0A0A0A] transition hover:border-[#0A0A0A]"
-              >
-                Ask Zeus
-              </Link>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
+  const { state, customer, login, register, logout, updateProfile } = useCustomerAuth();
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams(); const resetToken = params.get("token");
+  const redirect = params.get("redirect"); const safeRedirect = redirect?.startsWith("/account") || redirect === "/zeus" ? redirect : undefined;
+  const [mode, setMode] = useState<Mode>(params.get("mode") === "register" ? "register" : "login"); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState("");
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setBusy(true); setError(""); setNotice(""); const data = new FormData(event.currentTarget);
+    try {
+      if (resetToken) { const password = String(data.get("password") ?? ""); if (password !== String(data.get("confirmPassword") ?? "")) throw new Error("Passwords do not match."); await apiRequest("/api/account/reset-password", { method: "POST", body: JSON.stringify({ token: resetToken, password }) }); setParams({}); setMode("login"); setNotice("Password updated. Sign in with your new password."); }
+      else if (mode === "forgot") { const recaptchaToken = await executeRecaptcha("password_reset_request"); await apiRequest("/api/account/forgot-password", { method: "POST", body: JSON.stringify({ email: String(data.get("email") ?? ""), recaptchaToken }) }); setNotice("If an account exists for this email, we've sent password reset instructions."); }
+      else if (mode === "login") { await login({ email: String(data.get("email") ?? ""), password: String(data.get("password") ?? "") }); if (safeRedirect) navigate(safeRedirect, { replace: true }); }
+      else { const password = String(data.get("password") ?? ""); if (password !== String(data.get("confirmPassword") ?? "")) throw new Error("Passwords do not match."); const recaptchaToken = await executeRecaptcha("account_register"); await register({ firstName: String(data.get("firstName") ?? ""), lastName: String(data.get("lastName") ?? ""), email: String(data.get("email") ?? ""), password, recaptchaToken }); if (safeRedirect) navigate(safeRedirect, { replace: true }); }
+    } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); }
+  };
+  if (state === "loading") return <main className="grid min-h-[55vh] place-items-center bg-[#F6F7F9]"><p className="text-sm font-bold text-[#667085]" role="status">Loading your account...</p></main>;
+  if (state === "authenticated" && customer) return <AccountDashboard customer={customer} busy={busy} error={error} notice={notice} onSaveProfile={async (event) => { event.preventDefault(); setBusy(true); setError(""); const data = new FormData(event.currentTarget); try { await updateProfile({ firstName: String(data.get("firstName") ?? ""), lastName: String(data.get("lastName") ?? ""), phone: String(data.get("phone") ?? "") }); setNotice("Profile updated."); } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); } }} onLogout={async () => { setBusy(true); try { await logout(); setNotice("You have signed out."); } catch (reason) { setError(messageFor(reason)); } finally { setBusy(false); } }} />;
+  return <main className="overflow-x-hidden bg-[linear-gradient(135deg,#F8FAFA_0%,#EEF5F3_100%)] px-4 py-10 sm:px-6 lg:px-8"><div className="mx-auto grid min-w-0 max-w-5xl gap-6 lg:grid-cols-[0.8fr_1.2fr]"><section className="min-w-0 rounded-lg bg-[#0B1211] p-7 text-white sm:p-9"><p className="text-sm font-black uppercase tracking-[0.18em] text-[var(--tek-accent)]">TekCentral Account</p><h1 className="mt-4 break-words text-4xl font-black leading-tight">Your technology, in one secure place.</h1><p className="mt-4 leading-7 text-white/70">Manage your profile and saved delivery details, with secure account-owned order history.</p><div className="mt-8 flex items-center gap-3 text-sm font-bold"><FiShield className="text-[var(--tek-accent)]" /> Secure server-managed session</div></section><section className="min-w-0 rounded-lg border border-[#E4E7EC] bg-white p-6 shadow-sm sm:p-8"><div className="flex min-w-0 gap-2" role="tablist" aria-label="Account access">{(["login", "register"] as const).map((item) => <button key={item} type="button" role="tab" aria-selected={mode === item && !resetToken} onClick={() => { setMode(item); setError(""); setNotice(""); setParams({}); }} className={`min-w-0 flex-1 rounded-md px-3 py-3 text-sm font-black ${mode === item && !resetToken ? "bg-[#E8F7F3] text-[#176B5C]" : "bg-[#F6F7F9] text-[#667085]"}`}>{item === "login" ? "Sign in" : "Create account"}</button>)}</div><h2 className="mt-7 text-2xl font-black">{resetToken ? "Choose a new password" : mode === "forgot" ? "Reset your password" : mode === "register" ? "Create your account" : "Welcome back"}</h2><form onSubmit={submit} className="mt-6 grid min-w-0 gap-4">{mode === "register" && !resetToken && <div className="grid min-w-0 gap-4 sm:grid-cols-2"><TextField name="firstName" label="First name" autoComplete="given-name" /><TextField name="lastName" label="Last name" autoComplete="family-name" /></div>}{!resetToken && <TextField name="email" label="Email" type="email" autoComplete="email" />}{mode !== "forgot" && <PasswordInput name="password" label={resetToken ? "New password" : "Password"} autoComplete={resetToken || mode === "register" ? "new-password" : "current-password"} />}{(mode === "register" || resetToken) && <PasswordInput name="confirmPassword" label="Confirm password" autoComplete="new-password" />}{error && <p className="rounded-md bg-[#FEF3F2] px-4 py-3 text-sm font-bold text-[#B42318]" role="alert">{error}</p>}{notice && <p className="rounded-md bg-[#ECFDF3] px-4 py-3 text-sm font-bold text-[#067647]" role="status">{notice}</p>}<button disabled={busy} className="mt-1 h-12 rounded-md bg-[var(--tek-accent)] px-5 text-sm font-black disabled:opacity-50">{busy ? "Please wait..." : resetToken ? "Update password" : mode === "forgot" ? "Send reset instructions" : mode === "register" ? "Create account" : "Sign in"}</button>{mode === "login" && !resetToken && <button type="button" onClick={() => setMode("forgot")} className="text-sm font-bold text-[#176B5C]">Forgot password?</button>}{mode === "forgot" && <button type="button" onClick={() => setMode("login")} className="text-sm font-bold text-[#176B5C]">Back to sign in</button>}</form></section></div></main>;
 }

@@ -28,6 +28,10 @@ export function normalizeDimension(value: number, unit: "mm" | "cm" | "in") {
   if (!Number.isFinite(value) || value <= 0) throw new Error("INVALID_SOURCE_DATA");
   return Math.round((unit === "cm" ? value * 10 : unit === "in" ? value * 25.4 : value) * 1000) / 1000;
 }
+export function manufacturerIdentityFailure(supplierSku: string, confidence: IdentityConfidence): ScoopLogisticsFailureReason {
+  if (supplierSku === "CD-WR1200" && confidence === "MEDIUM") return "HARDWARE_REVISION_REQUIRED";
+  return confidence === "MEDIUM" ? "LOW_IDENTITY_CONFIDENCE" : "IDENTITY_NOT_RESOLVED";
+}
 
 const records: ManufacturerLogisticsLookup[] = [
   { identity: { manufacturer: "Ubiquiti", scoopSku: "ACB-ISP", manufacturerModel: "ACB-ISP", aliases: ["airCube ISP", "ACB-ISP"], canonicalUrl: "https://techspecs.ui.com/uisp/wired/acb-isp", identityConfidence: "HIGH" }, product: { weightGrams: 280, lengthMm: 87.8, widthMm: 89.5, heightMm: 89.25 }, notes: "Official product measurements used as shipping fallback." },
@@ -44,7 +48,10 @@ class OfficialRecordProvider implements ScoopManufacturerMetadataProvider {
   constructor(public id: string, private manufacturer: string) {}
   supportsManufacturer(manufacturer?: string) { return normalize(manufacturer) === normalize(this.manufacturer); }
   async resolveIdentity(product: ScoopCatalogueProduct) {
-    return records.filter((record) => normalize(record.identity.manufacturer) === normalize(product.manufacturer)).find((record) => normalize(record.identity.scoopSku) === normalize(product.supplierSku) && record.identity.aliases.some((alias) => matchesScoopManufacturerAlias(product, alias)));
+    const record = records.filter((item) => normalize(item.identity.manufacturer) === normalize(product.manufacturer)).find((item) => normalize(item.identity.scoopSku) === normalize(product.supplierSku) && item.identity.aliases.some((alias) => matchesScoopManufacturerAlias(product, alias)));
+    if (!record) return undefined;
+    if (product.supplierSku === "CD-WR1200" && product.confirmedHardwareRevision) return product.confirmedHardwareRevision.revision === "2.0" ? { ...record, identity: { ...record.identity, identityConfidence: "HIGH" as const, manufacturerModel: "WR1200 2.0" } } : undefined;
+    return record;
   }
   async fetchLogistics(identity: ManufacturerLogisticsLookup) { return identity; }
   verifyIdentity(product: ScoopCatalogueProduct, result: ManufacturerLogisticsLookup): IdentityConfidence {
@@ -56,6 +63,7 @@ class OfficialRecordProvider implements ScoopManufacturerMetadataProvider {
     return {
       source: "MANUFACTURER" as const, sourceReference: result.identity.canonicalUrl, manufacturer: result.identity.manufacturer, model: result.identity.manufacturerModel, supplierSku: result.identity.scoopSku,
       identityConfidence: result.identity.identityConfidence, sourceConfidence: "HIGH" as const, shippingBasis: packageComplete ? "PACKAGE" as const : "PRODUCT_DIMENSIONS_FALLBACK" as const,
+      measurementScope: packageComplete ? "PRODUCT_AND_PACKAGE" as const : "PRODUCT" as const, productSource: "MANUFACTURER" as const, packageSource: packageComplete ? "MANUFACTURER" as const : undefined,
       weightGrams: shipping.weightGrams, lengthMm: shipping.lengthMm, widthMm: shipping.widthMm, heightMm: shipping.heightMm,
       packageWeightGrams: result.package?.weightGrams, packageLengthMm: result.package?.lengthMm, packageWidthMm: result.package?.widthMm, packageHeightMm: result.package?.heightMm,
       actualWeightKg: shipping.weightGrams === undefined ? undefined : shipping.weightGrams / 1000,
@@ -77,7 +85,7 @@ export async function acquireScoopManufacturerLogistics(supplierSku: string, pro
   for (const provider of compatible) {
     const identity = await provider.resolveIdentity(product); if (!identity) continue;
     const result = await provider.fetchLogistics(identity); const confidence = provider.verifyIdentity(product, result);
-    if (confidence !== "HIGH") return { outcome: "FAILED" as const, reason: confidence === "MEDIUM" ? "LOW_IDENTITY_CONFIDENCE" as const : "IDENTITY_NOT_RESOLVED" as const, candidate: result };
+    if (confidence !== "HIGH") return { outcome: "FAILED" as const, reason: manufacturerIdentityFailure(supplierSku, confidence), candidate: result };
     try {
       const values = provider.normalizeLogistics(result); validateScoopLogisticsValues(values); const now = new Date().toISOString();
       const record: ScoopLogisticsMetadata = { ...values, identityConfidence: confidence, status: deriveScoopLogisticsStatus(values), capturedAt: now, updatedAt: now, fetchedAt: now };

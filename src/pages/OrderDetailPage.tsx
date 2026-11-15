@@ -17,6 +17,7 @@ import {
 import { formatDateTime } from "@/lib/order-utils";
 import { usePageTitle } from "@/lib/page-title";
 import { getCustomerPaymentError } from "@/lib/payment-errors";
+import { guestOrderAccessHeaders, usePrivateOrderPage } from "@/lib/guest-order-access";
 import { useOrders } from "@/state/orders";
 import type { OrderStatus, RefundStatus } from "@/types/order";
 
@@ -46,17 +47,15 @@ type RetryPaymentState = "redirecting" | "error" | null;
 export function OrderDetailPage() {
   const { orderNumber = "" } = useParams();
   const {
-    getOrder,
-    requestCancellation,
     requestRefund,
     updateOrderStatus,
     updateRefundStatus,
   } = useOrders();
   const { saveOrderMirror } = useOrders();
-  const localOrder = getOrder(orderNumber);
-  const [backendOrder, setBackendOrder] = useState(localOrder);
+  const [backendOrder, setBackendOrder] = useState<Parameters<typeof saveOrderMirror>[0]>();
   const [loading, setLoading] = useState(Boolean(orderNumber));
-  const order = backendOrder ?? localOrder;
+  const [accessFailed, setAccessFailed] = useState(false);
+  const order = backendOrder;
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reason, setReason] = useState(cancellationReasons[0]);
   const [customReason, setCustomReason] = useState("");
@@ -65,6 +64,7 @@ export function OrderDetailPage() {
   const [isPaymentRedirecting, setIsPaymentRedirecting] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const paymentNoticeRef = useRef<HTMLDivElement | null>(null);
+  usePrivateOrderPage(orderNumber);
 
   usePageTitle(order ? `${order.orderNumber} | TekCentral` : "Order | TekCentral");
 
@@ -79,14 +79,15 @@ export function OrderDetailPage() {
     if (!orderNumber) {
       return;
     }
-    apiRequest<{ order: NonNullable<typeof localOrder> }>(
+    apiRequest<{ order: Parameters<typeof saveOrderMirror>[0] }>(
       `/api/orders/${encodeURIComponent(orderNumber)}`,
+      { headers: guestOrderAccessHeaders(orderNumber) },
     )
       .then((response) => {
         setBackendOrder(response.order);
         saveOrderMirror(response.order);
       })
-      .catch(() => undefined)
+      .catch(() => setAccessFailed(true))
       .finally(() => setLoading(false));
   }, [orderNumber, saveOrderMirror]);
 
@@ -100,30 +101,41 @@ export function OrderDetailPage() {
     );
   }
 
-  if (!order) {
+  if (!order || accessFailed) {
     return (
       <section className="bg-white px-4 py-12 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-3xl rounded-lg border border-[#E4E7EC] bg-white p-8 text-center shadow-sm">
-          <h1 className="text-3xl font-black text-[#0A0A0A]">Order not found.</h1>
+          <h1 className="text-3xl font-black text-[#0A0A0A]">We couldn't access this order.</h1>
           <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-[#3F4652]">
-            Check your order number or return to your order history.
+            Sign in to view an account order, or return to the shop.
           </p>
           <Link
-            to="/orders"
+            to={`/account?redirect=${encodeURIComponent(`/order/${orderNumber}`)}`}
             className="mt-6 inline-flex rounded-md bg-[var(--tek-accent)] px-5 py-3 text-sm font-black text-[var(--tek-accent-ink)]"
           >
-            View Orders
+            Sign In
           </Link>
+          <Link to="/shop" className="ml-3 mt-6 inline-flex rounded-md border border-[#E4E7EC] px-5 py-3 text-sm font-black text-[#0A0A0A]">Shop Technology</Link>
         </div>
       </section>
     );
   }
 
-  const submitCancellation = (event: FormEvent<HTMLFormElement>) => {
+  const submitCancellation = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const finalReason = reason === "Other" ? customReason.trim() : reason;
-    requestCancellation(order.orderNumber, finalReason || undefined);
-    setCancelOpen(false);
+    try {
+      const response = await apiRequest<{ order: typeof order }>(`/api/orders/${encodeURIComponent(order.orderNumber)}/cancellation`, {
+        method: "POST",
+        headers: guestOrderAccessHeaders(order.orderNumber),
+        body: JSON.stringify({ reason: finalReason || undefined }),
+      });
+      setBackendOrder(response.order);
+      saveOrderMirror(response.order);
+      setCancelOpen(false);
+    } catch {
+      setPaymentError("Cancellation request could not be completed. Try again.");
+    }
   };
 
   const requestRefundForReturn = (returnRequestId: string) => {
@@ -156,6 +168,7 @@ export function OrderDetailPage() {
         fields: Record<string, string>;
       }>("/api/payments/payfast/create", {
         method: "POST",
+        headers: guestOrderAccessHeaders(order.orderNumber),
         body: JSON.stringify({ orderNumber: order.orderNumber }),
       });
       redirectToPayfast(paymentRequest.actionUrl, paymentRequest.fields);

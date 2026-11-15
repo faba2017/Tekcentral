@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { applyScoopWebsiteProducts } from "./scoopCatalogueRepository.js";
 import type { ScoopWebsiteImportPreviewRow, ScoopWebsiteImportRow } from "./scoopTypes.js";
+import { backfillScoopCanonicalUrls } from "./scoopUrlReconciliation.js";
 
 export interface ScoopWebsiteDiscoveryProvider {
   mode: "SAFE_DIRECT_DISCOVERY" | "MANUAL_WEBSITE_IMPORT";
@@ -67,5 +68,6 @@ export async function applyScoopWebsiteImport(input: string, importFingerprint: 
   if (preview.importFingerprint !== importFingerprint) throw new Error("Website import changed after preview. Preview it again before applying.");
   if (preview.summary.rejected) throw new Error("Website import contains rejected rows.");
   const batchId = `scoop-web-${randomUUID()}`;
-  return applyScoopWebsiteProducts(preview.rows.map((row) => ({ sku: row.sku, title: row.title, manufacturer: row.manufacturer, productUrl: row.productUrl, imageUrl: row.imageUrl, category: row.category, supplierCode: row.supplierCode })), batchId);
+  const applied = await applyScoopWebsiteProducts(preview.rows.map((row) => ({ sku: row.sku, title: row.title, manufacturer: row.manufacturer, productUrl: row.productUrl, imageUrl: row.imageUrl, category: row.category, supplierCode: row.supplierCode })), batchId);
+  return { ...applied, urlBackfill: await backfillScoopCanonicalUrls() };
 }

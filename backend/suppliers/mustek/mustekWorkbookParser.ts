@@ -1,0 +1,30 @@
+import { createHash } from "node:crypto";
+import { unzipSync } from "fflate";
+export interface MustekEvidenceRow{id:string;supplierSku:string;sourceDescription?:string;sourceBrand?:string;workbookName:string;worksheetName:string;sourceRow:number;dealerCost?:number;currency:"ZAR";taxBasis:"EXCLUSIVE"|"INCLUSIVE"|"UNKNOWN";stockEvidence?:string;productUrl?:string;sourceFingerprint:string}
+export interface MustekWorkbookAudit{workbookName:string;worksheetCount:number;worksheetNames:string[];rowsInspected:number;candidateDataSheets:string[];ignoredSheets:string[];recognizedHeaders:Record<string,string[]>;warnings:string[];evidence:MustekEvidenceRow[]}
+const decode=(bytes?:Uint8Array)=>bytes?new TextDecoder().decode(bytes):"";
+const entity=(value:string)=>value.replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&amp;/g,"&").replace(/&quot;/g,'"').replace(/&#39;/g,"'");
+const sharedStrings=(xml:string)=>[...xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)].map(match=>entity([...match[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map(value=>value[1]).join("")));
+const column=(reference:string)=>{let result=0;for(const character of reference.replace(/\d/g,""))result=result*26+character.charCodeAt(0)-64;return result-1;};
+function worksheetRows(xml:string,shared:string[]){return [...xml.matchAll(/<row\b[^>]*r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g)].map(match=>{const values:string[]=[];for(const cell of match[2].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)){const reference=/\br="([A-Z]+\d+)"/.exec(cell[1])?.[1]??"A1",type=/\bt="([^"]+)"/.exec(cell[1])?.[1],raw=/<v>([\s\S]*?)<\/v>/.exec(cell[2])?.[1]??/<t\b[^>]*>([\s\S]*?)<\/t>/.exec(cell[2])?.[1]??"";values[column(reference)]=type==="s"?shared[Number(raw)]??"":entity(raw);}return{row:Number(match[1]),values};});}
+const aliases={sku:["part no","part number","part #","sku","item no","item number","product code","stock code"],description:["description","product description","item description"],price:["dealer price","dealer cost","price excl vat","price excluding vat","dealer excl vat","price ex vat"],weblink:["weblink","product link","web link","url"],stock:["stock","qty","quantity","stock on hand"]} as const;
+const normalize=(value?:string)=>(value??"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+function headerMap(values:string[]){const map:Record<string,number>={};for(const [key,list] of Object.entries(aliases))for(let index=0;index<values.length;index++)if(list.includes(normalize(values[index]) as never)){map[key]=index;break;}return map;}
+export function parseMustekWorkbook(bytes:Uint8Array,workbookName:string,sourceFingerprint=createHash("sha256").update(bytes).digest("hex")):MustekWorkbookAudit{
+  if(bytes[0]!==0x50||bytes[1]!==0x4b)throw new Error("MUSTEK_XLSX_SIGNATURE_INVALID");
+  let zip:Record<string,Uint8Array>;try{zip=unzipSync(bytes);}catch{throw new Error("MUSTEK_XLSX_CONTAINER_INVALID");}
+  const workbook=decode(zip["xl/workbook.xml"]),relationships=decode(zip["xl/_rels/workbook.xml.rels"]);if(!workbook||!relationships)throw new Error("MUSTEK_XLSX_WORKBOOK_MISSING");
+  const relation=new Map([...relationships.matchAll(/<Relationship\b[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)].map(match=>[match[1],match[2].replace(/^\//,"")]));
+  const sheets=[...workbook.matchAll(/<sheet\b[^>]*name="([^"]+)"[^>]*(?:r:id|id)="([^"]+)"[^>]*\/?\s*>/g)].map((match,index)=>({name:entity(match[1]),order:index,path:`xl/${(relation.get(match[2])??"").replace(/^xl\//,"")}`}));
+  const shared=sharedStrings(decode(zip["xl/sharedStrings.xml"]));
+  const audit:MustekWorkbookAudit={workbookName,worksheetCount:sheets.length,worksheetNames:sheets.map(sheet=>sheet.name),rowsInspected:0,candidateDataSheets:[],ignoredSheets:[],recognizedHeaders:{},warnings:[],evidence:[]};
+  for(const sheet of sheets){
+    const rows=worksheetRows(decode(zip[sheet.path]),shared);audit.rowsInspected+=rows.length;
+    let detected:{row:number;values:string[];map:Record<string,number>}|undefined;
+    for(const candidate of rows.slice(0,40)){const map=headerMap(candidate.values);if(map.sku!==undefined&&map.description!==undefined){detected={...candidate,map};break;}}
+    if(!detected){const patterned=rows.filter(row=>/^(?=.*\d)(?=.*[._/-])[A-Z0-9][A-Z0-9._/-]{3,}$/i.test(row.values[0]?.trim()??"")&&(row.values[2]?.trim().length??0)>8&&Number.isFinite(Number(row.values[3])));if(patterned.length>=2){detected={row:0,values:["Part No","","Description","Dealer Price"],map:{sku:0,description:2,price:3}};audit.warnings.push(`${sheet.name}: recognized deterministic headerless A/C/D price-list layout.`);}else{audit.ignoredSheets.push(sheet.name);audit.warnings.push(`${sheet.name}: no deterministic SKU/description header found.`);continue;}}
+    audit.candidateDataSheets.push(sheet.name);audit.recognizedHeaders[sheet.name]=Object.keys(detected.map);const seen=new Set<string>();
+    for(const row of rows.filter(item=>item.row>detected!.row)){const sku=row.values[detected.map.sku]?.trim();if(!sku||detected.row===0&&!/^(?=.*\d)(?=.*[._/-])[A-Z0-9][A-Z0-9._/-]{3,}$/i.test(sku))continue;const duplicate=seen.has(sku);seen.add(sku);if(duplicate)audit.warnings.push(`${sheet.name}: duplicate SKU ${sku} retained with row provenance.`);const priceRaw=detected.map.price===undefined?undefined:row.values[detected.map.price],dealerCost=priceRaw?Number(priceRaw.replace(/[^0-9.-]/g,"")):undefined,priceHeader=detected.map.price===undefined?"":normalize(detected.values[detected.map.price]);audit.evidence.push({id:createHash("sha256").update(`${sourceFingerprint}|${sheet.name}|${row.row}|${sku}`).digest("hex"),supplierSku:sku,sourceDescription:row.values[detected.map.description]?.trim()||undefined,workbookName,worksheetName:sheet.name,sourceRow:row.row,dealerCost:Number.isFinite(dealerCost)?dealerCost:undefined,currency:"ZAR",taxBasis:/excl|excluding|ex vat/.test(priceHeader)?"EXCLUSIVE":/incl|including/.test(priceHeader)?"INCLUSIVE":"UNKNOWN",stockEvidence:detected.map.stock===undefined?undefined:row.values[detected.map.stock],productUrl:detected.map.weblink===undefined?undefined:row.values[detected.map.weblink],sourceFingerprint});}
+  }
+  return audit;
+}

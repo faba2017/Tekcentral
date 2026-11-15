@@ -12,7 +12,10 @@ export interface AsyncActionState {
   viewingProductId?: string;
   importingProductId?: string;
   refreshProductId?: string;
+  refreshAvailabilityId?: string;
   suggesting?: boolean;
+  mappingPreview?: boolean;
+  mappingApply?: boolean;
   checkingDelivery?: boolean;
   updatingMappingId?: string;
 }
@@ -21,7 +24,7 @@ export const cjAutocompleteMinLength = 2;
 export const cjAutocompleteDebounceMs = 400;
 export const cjAutocompleteCacheMs = 3 * 60 * 1000;
 export const cjVariantFilterThreshold = 7;
-export const cjImportedPageSize = 20;
+export const cjImportedPageSize = 15;
 export const recentCjSearchesKey = "tekcentral:admin:cj:recent-searches";
 export const recentCjViewedKey = "tekcentral:admin:cj:recent-viewed";
 
@@ -220,8 +223,16 @@ export function supplierPriceLabel(price?: number, currency?: string) {
   return `${currency} ${price}`;
 }
 
-export type MappingStatusFilter = "all" | "UNMAPPED" | "SUGGESTED" | "VERIFIED" | "STALE" | "REJECTED";
+export type MappingStatusFilter = "all" | "UNMAPPED" | "SUGGESTED" | "VERIFIED" | "REVIEW_REQUIRED" | "SUPERSEDED" | "STALE" | "REJECTED";
 export type SupplierStatusFilter = "all" | "available" | "unavailable" | "stale" | "needs-refresh";
+
+export function shouldShowCjMappingEditor(status?: SupplierProductMapping["status"], changeRequested = false) {
+  return status !== "VERIFIED" || changeRequested;
+}
+
+export function isCjMappingSuggestionComplete(status?: SupplierProductMapping["status"]) {
+  return status === "SUGGESTED" || status === "VERIFIED";
+}
 
 export function mappingStatusForProduct(
   product: SupplierCatalogueProduct,
@@ -229,11 +240,14 @@ export function mappingStatusForProduct(
 ) {
   const productMappings = mappings.filter((mapping) => mapping.supplierProductId === product.supplierProductId);
   if (productMappings.length === 0) return "UNMAPPED" as const;
-  if (productMappings.some((mapping) => mapping.status === "STALE")) return "STALE" as const;
-  if (productMappings.some((mapping) => mapping.status === "SUGGESTED")) return "SUGGESTED" as const;
-  if (productMappings.some((mapping) => mapping.status === "REJECTED")) return "REJECTED" as const;
-  if (productMappings.every((mapping) => mapping.status === "VERIFIED")) return "VERIFIED" as const;
-  return productMappings[0]?.status ?? "UNMAPPED";
+  if (productMappings.every((mapping) => mapping.status === "SUPERSEDED")) return "SUPERSEDED" as const;
+  const activeMappings = productMappings.filter((mapping) => mapping.status !== "SUPERSEDED");
+  if (activeMappings.some((mapping) => mapping.status === "REVIEW_REQUIRED")) return "REVIEW_REQUIRED" as const;
+  if (activeMappings.some((mapping) => mapping.status === "STALE")) return "STALE" as const;
+  if (activeMappings.some((mapping) => mapping.status === "SUGGESTED")) return "SUGGESTED" as const;
+  if (activeMappings.some((mapping) => mapping.status === "REJECTED")) return "REJECTED" as const;
+  if (activeMappings.every((mapping) => mapping.status === "VERIFIED")) return "VERIFIED" as const;
+  return activeMappings[0]?.status ?? "UNMAPPED";
 }
 
 export function mappingSummaryForProduct(

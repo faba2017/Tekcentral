@@ -1,4 +1,5 @@
 import { listOrders, updateOrder, updateOrderById } from "./orderRepository.js";
+import { listSupplierOrders } from "./supplierOrderRepository.js";
 import { getSupplierDisplayName } from "./supplierRegistry.js";
 import type {
   AdminActivityEntry,
@@ -27,11 +28,14 @@ export const attentionConfig = {
 };
 
 export const supplierOptions: Record<SupplierCode, string> = {
+  TEKCENTRAL: getSupplierDisplayName("TEKCENTRAL"),
+  SYNTECH: getSupplierDisplayName("SYNTECH"),
   SCOOP: getSupplierDisplayName("SCOOP"),
   PINNACLE: getSupplierDisplayName("PINNACLE"),
   MIRO: getSupplierDisplayName("MIRO"),
   RECTRON: getSupplierDisplayName("RECTRON"),
   MUSTEK: getSupplierDisplayName("MUSTEK"),
+  TVR: getSupplierDisplayName("TVR"),
   AXIZ: getSupplierDisplayName("AXIZ"),
   CJ: getSupplierDisplayName("CJ"),
   MANUAL: getSupplierDisplayName("MANUAL"),
@@ -95,6 +99,20 @@ const allowedSupplierTransitions: Partial<
   DISPATCHED: ["COMPLETED"],
 };
 
+const allocationLockedSupplierStatuses = new Set([
+  "APPROVED", "SUBMITTING", "SUBMITTED", "ORDERED", "CONFIRMED", "BACKORDERED",
+  "PARTIALLY_CONFIRMED", "DISPATCHED", "SHIPPED", "DELIVERED", "COMPLETED",
+]);
+
+async function assertAllocationEditable(orderNumber: string) {
+  const supplierOrders = await listSupplierOrders();
+  if (supplierOrders.some((order) =>
+    order.customerOrderNumber === orderNumber && allocationLockedSupplierStatuses.has(order.status),
+  )) {
+    throw new Error("Supplier allocation is locked because procurement has begun.");
+  }
+}
+
 function createLocalId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -124,6 +142,17 @@ function assertOrderTransition(order: BackendOrder, nextStatus: OrderStatus) {
     order.payment.status !== "PAID"
   ) {
     throw new Error("Paid payment confirmation is required for this order transition.");
+  }
+  if (nextStatus === "SHIPPED") {
+    const hasEvidence = Boolean(
+      order.shipment?.courierName
+      || order.shipment?.trackingNumber
+      || order.shipment?.dispatchDate
+      || (order.shipments ?? []).some((shipment) =>
+        shipment.courier || shipment.trackingNumber || shipment.dispatchedAt,
+      ),
+    );
+    if (!hasEvidence) throw new Error("Shipment evidence is required before marking an order shipped.");
   }
   if (!allowedOrderTransitions[order.status]?.includes(nextStatus)) {
     throw new Error(`Invalid order transition from ${order.status} to ${nextStatus}.`);
@@ -197,6 +226,8 @@ export function deriveAttentionReasons(
       createdAt: order.returns.find((entry) => entry.status === "REQUESTED")?.createdAt,
     });
   }
+  const pendingInventory = order.returns.flatMap((entry) => entry.items.flatMap((item) => item.inventoryReconciliations ?? [])).find((entry) => entry.inspectionState !== "RECONCILED");
+  if (pendingInventory) reasons.push({ code: "RETURN_INVENTORY_RECONCILIATION_REQUIRED", label: "Return inventory", detail: pendingInventory.inspectionState === "RECEIVED" ? "Returned stock is awaiting inspection" : "Returned stock is awaiting disposition", createdAt: pendingInventory.receivedAt });
   if (order.refunds.some((entry) => entry.status === "PENDING")) {
     reasons.push({
       code: "REFUND_AWAITING_REVIEW",
@@ -512,6 +543,10 @@ export async function createSupplierAllocation(input: {
   supplierOrderReference?: string;
   notes?: string;
 }) {
+  if (input.supplierCode === "TEKCENTRAL") {
+    throw new Error("TekCentral Manual Supplier procurement is not available in Phase A.");
+  }
+  await assertAllocationEditable(input.orderNumber);
   return updateOrder(input.orderNumber, (order) => {
     const validItemIds = new Set(order.items.map((item) => item.productId));
     const orderItemIds = input.orderItemIds.filter((itemId) => validItemIds.has(itemId));
@@ -546,6 +581,10 @@ export async function updateSupplierAllocation(input: {
   supplierOrderReference?: string;
   notes?: string;
 }) {
+  if (input.supplierCode === "TEKCENTRAL") {
+    throw new Error("TekCentral Manual Supplier procurement is not available in Phase A.");
+  }
+  await assertAllocationEditable(input.orderNumber);
   return updateOrder(input.orderNumber, (order) => {
     const allocation = order.supplierAllocations?.find((item) => item.id === input.allocationId);
     if (!allocation) throw new Error("Supplier allocation not found.");
@@ -607,6 +646,9 @@ export async function setOperationalHold(input: {
   reason: OperationalHoldReason;
   notes?: string;
 }) {
+  if (["OTHER_MANUAL", "SUPPLIER_PROCUREMENT_ISSUE"].includes(input.reason) && !input.notes?.trim()) {
+    throw new Error("Hold notes are required for this reason.");
+  }
   return updateOrder(input.orderNumber, (order) => {
     const now = new Date().toISOString();
     return {
@@ -686,6 +728,9 @@ export async function createAdminShipment(input: {
   deliveredAt?: string;
   status?: ShipmentStatus;
 }) {
+  if (!input.courier?.trim() && !input.trackingNumber?.trim() && !input.dispatchedAt) {
+    throw new Error("Shipment evidence is required before confirming shipment.");
+  }
   return updateOrder(input.orderNumber, (order) => {
     if (order.operationalHold?.active) {
       throw new Error("Release the operational hold before shipping.");

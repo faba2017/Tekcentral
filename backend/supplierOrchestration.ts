@@ -12,10 +12,14 @@ import {
   saveSupplierProductMapping,
 } from "./supplierProductMappingRepository.js";
 import { getScoopCatalogueProduct } from "./suppliers/scoop/scoopCatalogueRepository.js";
+import { getSyntechCatalogueProduct } from "./suppliers/syntech/syntechCatalogueRepository.js";
+import { consumeTekCentralManualReservation, getTekCentralManualOffer, releaseTekCentralManualReservation, reserveTekCentralManualStock } from "./suppliers/tekcentral/tekcentralManualOfferRepository.js";
+import { getSupplierPolicySettings } from "./businessSettingsRepository.js";
 import { getSupplierRegistryEntry } from "./supplierRegistry.js";
 import { notifyNewScoopActionRequired } from "./internalNotificationService.js";
 import { supplierOfferFromMapping } from "./supplierDomain.js";
 import { createAdminShipment } from "./adminOperations.js";
+import { finalizeCostBasis, resolveSelectedSupplierCost } from "./orderCostBasis.js";
 import type {
   AttentionReason,
   BackendOrder,
@@ -35,7 +39,9 @@ export class SupplierWorkflowError extends Error {
       | "DUPLICATE_PROCUREMENT"
       | "INVALID_SUPPLIER_TRANSITION"
       | "INVALID_SUPPLIER_QUANTITY"
-      | "DISPATCH_FIELDS_REQUIRED",
+      | "DISPATCH_FIELDS_REQUIRED"
+      | "INSUFFICIENT_STOCK"
+      | "SUPPLIER_EVIDENCE_CHANGED",
     message: string,
   ) {
     super(message);
@@ -136,6 +142,10 @@ async function allocationLines(
         : undefined;
       const unitCost = scoopOffer?.dealerPriceExVat;
       const quantity = quantities.get(item.productId) ?? item.quantity;
+      const cost = mapping ? await resolveSelectedSupplierCost(allocation.supplierCode, mapping) : undefined;
+      const syntechOffer = allocation.supplierCode === "SYNTECH" && mapping?.status === "VERIFIED"
+        ? await getSyntechCatalogueProduct(mapping.supplierSku)
+        : undefined;
       lines.push({
         orderItemId: item.productId,
         productId: item.productId,
@@ -154,7 +164,31 @@ async function allocationLines(
         expectedMerchandiseCost: unitCost !== undefined ? Math.round(unitCost * quantity * 100) / 100 : null,
         costCapturedAt: unitCost !== undefined ? new Date().toISOString() : undefined,
         costSourceOfferId: unitCost !== undefined ? (mapping?.supplierOfferId ?? `SCOOP:${mapping?.supplierSku}`) : undefined,
+        normalizedUnitCostZar: cost?.normalizedUnitCostZar,
+        sourceUnitCost: cost?.sourceUnitCost,
+        sourceCurrency: cost?.sourceCurrency,
+        fxRate: cost?.fxRate,
+        fxProvider: cost?.fxProvider,
+        fxEffectiveAt: cost?.fxEffectiveAt,
+        costEvidenceObservedAt: cost?.observedAt,
+        costSourceFingerprint: cost?.sourceFingerprint,
+        costSourceReference: cost?.sourceReference,
+        pricingPolicyReference: cost?.pricingPolicyReference,
+        mappingId: mapping?.id,
         sellingPriceSnapshot: item.unitPrice,
+        normalDealerCostExVat: syntechOffer?.normalDealerCostExVat,
+        promoPriceExVat: syntechOffer?.promoPriceExVat,
+        promotionActive: syntechOffer?.promotionActive,
+        promotionStarts: syntechOffer?.promoStarts,
+        promotionEnds: syntechOffer?.promoEnds,
+        ...(allocation.supplierCode === "TEKCENTRAL" ? {
+          unitCost: cost?.sourceUnitCost ?? null,
+          costCurrency: cost?.sourceCurrency,
+          costExcludesVat: true,
+          expectedMerchandiseCost: cost ? Math.round(cost.normalizedUnitCostZar * quantity * 100) / 100 : null,
+          costCapturedAt: cost?.observedAt,
+          costSourceOfferId: mapping?.supplierOfferId,
+        } : {}),
       });
     }
   }
@@ -226,8 +260,35 @@ async function assertSupplierOrderActionReady(supplierOrder: SupplierOrder) {
 async function withResolvedSupplierMappings(supplierOrder: SupplierOrder) {
   const itemLines = await Promise.all(
     supplierOrder.itemLines.map(async (line) => {
-      if (line.supplierSku?.trim()) return line;
       const mapping = await getSupplierProductMapping(line.productId, supplierOrder.supplierCode);
+      if (supplierOrder.supplierCode === "SYNTECH" && mapping?.status === "VERIFIED" && mapping.supplierSku) {
+        const [cost, offer] = await Promise.all([
+          resolveSelectedSupplierCost("SYNTECH", mapping),
+          getSyntechCatalogueProduct(mapping.supplierSku),
+        ]);
+        return {
+          ...line,
+          supplierSku: mapping.supplierSku,
+          supplierOfferId: mapping.supplierOfferId ?? `SYNTECH:${mapping.supplierSku}`,
+          mappingId: mapping.id,
+          normalizedUnitCostZar: cost?.normalizedUnitCostZar,
+          sourceUnitCost: cost?.sourceUnitCost,
+          sourceCurrency: cost?.sourceCurrency,
+          costEvidenceObservedAt: cost?.observedAt,
+          costSourceFingerprint: cost?.sourceFingerprint,
+          costSourceReference: cost?.sourceReference,
+          normalDealerCostExVat: offer?.normalDealerCostExVat,
+          promoPriceExVat: offer?.promoPriceExVat,
+          promotionActive: offer?.promotionActive,
+          promotionStarts: offer?.promoStarts,
+          promotionEnds: offer?.promoEnds,
+        };
+      }
+      if (supplierOrder.supplierCode === "TEKCENTRAL" && mapping?.status === "VERIFIED" && mapping.supplierOfferId) {
+        const cost = await resolveSelectedSupplierCost("TEKCENTRAL", mapping);
+        return { ...line, supplierSku: mapping.supplierSku, supplierOfferId: mapping.supplierOfferId, mappingId: mapping.id, normalizedUnitCostZar: cost?.normalizedUnitCostZar, sourceUnitCost: cost?.sourceUnitCost, sourceCurrency: cost?.sourceCurrency, costEvidenceObservedAt: cost?.observedAt, costSourceFingerprint: cost?.sourceFingerprint, costSourceReference: cost?.sourceReference };
+      }
+      if (line.supplierSku?.trim()) return line;
       if (supplierOrder.supplierCode === "CJ" && mapping?.status !== "VERIFIED") return line;
       return mapping?.supplierSku
         ? {
@@ -326,7 +387,7 @@ export async function generateSupplierOrders(orderNumber: string) {
       ? Math.round(itemLines.reduce((sum, line) => sum + (line.expectedMerchandiseCost ?? 0), 0) * 100) / 100
       : null;
     const automaticScoop = supplierCode === "SCOOP" && supplierAllocations.every((allocation) => allocation.allocationMethod === "AUTO");
-    const supplierOrder: SupplierOrder = {
+    let supplierOrder: SupplierOrder = {
       id: nextSupplierOrderId(supplierCode, existing.length + created.length),
       customerOrderNumber: order.orderNumber,
       supplierCode: adapter.code,
@@ -344,7 +405,24 @@ export async function generateSupplierOrders(orderNumber: string) {
       mockSubmissions: [],
       events: [event("SUPPLIER_ORDER_GENERATED", automaticScoop ? "Paid order automatically allocated to Scoop for staff acknowledgement." : "Supplier order generated for approval.")],
     };
-    created.push(await saveSupplierOrder(supplierOrder));
+    if (supplierCode === "TEKCENTRAL") {
+      const policy = await getSupplierPolicySettings(); const reserved = [] as NonNullable<SupplierOrder["tekcentralOperations"]>["reservations"];
+      try {
+        for (const line of itemLines) {
+          const offer = line.supplierOfferId ? await getTekCentralManualOffer(line.supplierOfferId) : undefined;
+          if (!offer || !offer.active || offer.mappingStatus !== "VERIFIED" || offer.productId !== line.productId || offer.supplierSku !== line.supplierSku) throw new SupplierWorkflowError("SUPPLIER_MAPPING_REQUIRED", "An active verified TekCentral Manual Supplier mapping is required.");
+          if (Date.now() - Date.parse(offer.stockObservedAt) > policy.stockFreshnessHours * 3_600_000 || Date.now() - Date.parse(offer.costObservedAt) > policy.sourcePriceFreshnessHours * 3_600_000 || line.normalizedUnitCostZar === undefined) throw new SupplierWorkflowError("SUPPLIER_EVIDENCE_CHANGED", "Current TekCentral stock and cost evidence is required before reservation.");
+          try { const result = await reserveTekCentralManualStock({ offerId: offer.id, supplierOrderId: supplierOrder.id, orderNumber: order.orderNumber, quantity: line.quantity, expectedFingerprint: offer.sourceFingerprint }); reserved.push({ manualOfferId: offer.id, supplierSku: offer.supplierSku, quantity: line.quantity, stockEvidenceFingerprint: offer.sourceFingerprint, costEvidenceFingerprint: offer.sourceFingerprint, reservedAt: result.reservation.reservedAt }); }
+          catch (error) { if (error instanceof Error && error.message === "INSUFFICIENT_STOCK") throw new SupplierWorkflowError("INSUFFICIENT_STOCK", "Insufficient available TekCentral stock for this order."); throw error; }
+        }
+        supplierOrder = { ...supplierOrder, tekcentralOperations: { stage: "RESERVED", reservations: reserved }, events: [...supplierOrder.events, event("TEKCENTRAL_STOCK_RESERVED", "TekCentral-controlled stock reserved for the paid order.")] };
+        created.push(await saveSupplierOrder(supplierOrder));
+      } catch (error) {
+        for (const reservation of reserved) await releaseTekCentralManualReservation({ offerId: reservation.manualOfferId, supplierOrderId: supplierOrder.id });
+        if (error instanceof SupplierWorkflowError && ["INSUFFICIENT_STOCK", "SUPPLIER_EVIDENCE_CHANGED"].includes(error.code)) await updateOrder(order.orderNumber, (current) => ({ ...current, updatedAt: new Date().toISOString(), operationalHold: { active: true, reason: "INVENTORY_STOCK_ISSUE", notes: error.message, createdAt: new Date().toISOString() } }));
+        throw error;
+      }
+    } else created.push(await saveSupplierOrder(supplierOrder));
     const replaced = supplierAllocations.flatMap((allocation) =>
       allocation.orderItemIds.flatMap((itemId) => supersededByItemId.get(itemId) ?? []),
     );
@@ -435,26 +513,47 @@ export async function acknowledgeSupplierOrder(id: string, actor = "TekCentral S
   });
 }
 
+export function manualProcurementBlocker(supplierOrder: SupplierOrder) {
+  const manualSupported = getSupplierRegistryEntry(supplierOrder.supplierCode).procurement.mode === "MANUAL_SUPPORTED" || supplierOrder.submissionMode === "MANUAL";
+  if (!manualSupported || supplierOrder.status !== "APPROVED") return "Manual procurement must be supported and approved before it can be marked ordered.";
+  if (supplierOrder.supplierOrderReference) return "This supplier order has already been placed.";
+  if (["CREATED", "SUBMITTING", "UNKNOWN_RESULT"].includes(supplierOrder.externalSubmission?.status ?? "")) return "Existing supplier submission state must be reconciled before manual procurement.";
+  return undefined;
+}
+
 export async function markManualSupplierOrderOrdered(input: { id: string; supplierReference: string; actor?: string; note?: string }) {
   const supplierOrder = await getSupplierOrder(input.id);
   if (!supplierOrder) return undefined;
   await assertSupplierOrderActionReady(supplierOrder);
-  if (supplierOrder.submissionMode !== "MANUAL" || supplierOrder.status !== "APPROVED") throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", "Manual procurement must be approved before it can be marked ordered.");
+  const initialBlocker = manualProcurementBlocker(supplierOrder);
+  if (initialBlocker) throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", initialBlocker);
   const reference = input.supplierReference.trim();
   if (!reference) throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", "Supplier order reference is required before marking the order as ordered.");
+  const hasControlCharacters = (value: string, allowNewlines = false) => [...value].some((character) => { const code = character.charCodeAt(0); return code === 127 || (code < 32 && !(allowNewlines && (code === 9 || code === 10 || code === 13))); });
+  if (reference.length > 120 || hasControlCharacters(reference)) throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", "Supplier order reference must be 120 characters or fewer and contain no control characters.");
+  const note = input.note?.trim();
+  if (note && (note.length > 1_000 || hasControlCharacters(note, true))) throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", "Manual procurement note must be 1,000 characters or fewer.");
   return updateSupplierOrder(input.id, (current) => {
+    const blocker = manualProcurementBlocker(current);
+    if (blocker) throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", blocker);
     const now = new Date().toISOString();
-    return { ...current, status: "ORDERED", supplierOrderReference: reference, orderedAt: now, orderedBy: input.actor?.trim() || "TekCentral Staff", notes: input.note?.trim() || current.notes, updatedAt: now, events: [...current.events, event("SUPPLIER_ORDER_PLACED", "Manual supplier order placement recorded by staff.")] };
+    return { ...current, status: "ORDERED", supplierOrderReference: reference, orderedAt: now, orderedBy: input.actor?.trim() || "TekCentral Staff", notes: note || current.notes, updatedAt: now, events: [...current.events, event("SUPPLIER_ORDER_PLACED", "Manual supplier order placement recorded by staff.")] };
   });
 }
 
 export async function approveSupplierOrder(id: string) {
   const supplierOrder = await getSupplierOrder(id);
   if (!supplierOrder) return undefined;
+  if (supplierOrder.supplierCode === "TEKCENTRAL") {
+    for (const reservation of supplierOrder.tekcentralOperations?.reservations ?? []) {
+      const offer = await getTekCentralManualOffer(reservation.manualOfferId);
+      if (!offer || !offer.active || offer.sourceFingerprint !== reservation.costEvidenceFingerprint) throw new SupplierWorkflowError("SUPPLIER_EVIDENCE_CHANGED", "TekCentral Manual Supplier evidence changed after reservation. Cancel and review the allocation before approval.");
+    }
+  }
   const mappedSupplierOrder = await withResolvedSupplierMappings(supplierOrder);
   await assertSupplierOrderActionReady(mappedSupplierOrder);
   assertSupplierSkuMappings(mappedSupplierOrder);
-  return updateSupplierOrder(id, (supplierOrder) => {
+  const approved = await updateSupplierOrder(id, (supplierOrder) => {
     assertTransition(supplierOrder.status, "APPROVED");
     const now = new Date().toISOString();
     return {
@@ -466,6 +565,45 @@ export async function approveSupplierOrder(id: string) {
       events: [...supplierOrder.events, event("SUPPLIER_ORDER_APPROVED", "Supplier order approved by staff.")],
     };
   });
+  if (approved) {
+    await updateOrder(approved.customerOrderNumber, (current) => { const now = new Date().toISOString(); return { ...current, updatedAt: now, items: current.items.map((item) => { const line = approved.itemLines.find((entry) => entry.orderItemId === item.productId); return line && item.costBasis ? { ...item, costBasis: finalizeCostBasis(item, line, approved.supplierCode, now) } : item; }) }; });
+  }
+  return approved;
+}
+
+export async function progressTekCentralFulfilment(input: { id: string; action: "START_PICKING" | "MARK_PACKED" | "MARK_READY"; actor?: string }) {
+  const supplierOrder = await getSupplierOrder(input.id); if (!supplierOrder) return undefined;
+  if (supplierOrder.supplierCode !== "TEKCENTRAL" || !supplierOrder.tekcentralOperations) throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", "This action is only available for TekCentral internal fulfilment.");
+  await assertSupplierOrderActionReady(supplierOrder); if (supplierOrder.status !== "APPROVED") throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", "Approve the SupplierOrder before internal fulfilment.");
+  const expected = input.action === "START_PICKING" ? "RESERVED" : input.action === "MARK_PACKED" ? "PICKING" : "PACKED"; const next = input.action === "START_PICKING" ? "PICKING" : input.action === "MARK_PACKED" ? "PACKED" : "READY_FOR_DISPATCH"; if (supplierOrder.tekcentralOperations.stage === next) return supplierOrder; if (supplierOrder.tekcentralOperations.stage !== expected) throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", `Internal fulfilment must progress from ${expected}.`);
+  const now = new Date().toISOString(); const actor = input.actor?.trim() || "TekCentral Staff"; return updateSupplierOrder(input.id, (current) => ({ ...current, updatedAt: now, tekcentralOperations: { ...current.tekcentralOperations!, stage: next, ...(next === "PICKING" ? { pickingAt: now } : next === "PACKED" ? { packedAt: now } : { readyAt: now }) }, events: [...current.events, event(`TEKCENTRAL_${next}`, `${actor} moved internal fulfilment to ${next.replace(/_/g, " ").toLowerCase()}.`)] }));
+}
+
+export async function fulfilTekCentralSupplierOrder(input: { id: string; actor?: string }) {
+  const supplierOrder = await getSupplierOrder(input.id); if (!supplierOrder) return undefined;
+  if (supplierOrder.supplierCode !== "TEKCENTRAL" || !supplierOrder.tekcentralOperations) throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", "This action is only available for TekCentral internal fulfilment.");
+  if (supplierOrder.status === "COMPLETED" && supplierOrder.tekcentralOperations.stage === "FULFILLED") return supplierOrder;
+  await assertSupplierOrderActionReady(supplierOrder); if (supplierOrder.status !== "APPROVED" || supplierOrder.tekcentralOperations.stage !== "READY_FOR_DISPATCH") throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", "Stock can be fulfilled only after the internal order is ready for dispatch.");
+  const actor = input.actor?.trim() || "TekCentral Staff";
+  for (const reservation of supplierOrder.tekcentralOperations.reservations) await consumeTekCentralManualReservation({ offerId: reservation.manualOfferId, supplierOrderId: supplierOrder.id, orderNumber: supplierOrder.customerOrderNumber, actor });
+  const now = new Date().toISOString(); const completed = await updateSupplierOrder(input.id, (current) => ({ ...current, status: "COMPLETED", completedAt: now, updatedAt: now, tekcentralOperations: { ...current.tekcentralOperations!, stage: "FULFILLED", fulfilledAt: now, reservations: current.tekcentralOperations!.reservations.map((item) => ({ ...item, consumedAt: item.consumedAt ?? now })) }, events: [...current.events, event("TEKCENTRAL_ORDER_FULFILLED", `${actor} confirmed irreversible internal fulfilment and stock consumption.`)] }));
+  await updateOrder(supplierOrder.customerOrderNumber, (current) => ({ ...current, status: current.status === "CONFIRMED" ? "PROCESSING" : current.status, updatedAt: now, supplierAllocations: (current.supplierAllocations ?? []).map((item) => supplierOrder.allocationIds.includes(item.id) ? { ...item, status: "COMPLETED", updatedAt: now } : item) }));
+  return completed;
+}
+
+export async function cancelTekCentralSupplierOrder(input: { id: string; actor?: string; reason?: string }) {
+  const supplierOrder = await getSupplierOrder(input.id); if (!supplierOrder) return undefined;
+  if (supplierOrder.supplierCode !== "TEKCENTRAL" || !supplierOrder.tekcentralOperations) throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", "This action is only available for TekCentral internal fulfilment.");
+  if (supplierOrder.status === "CANCELLED") return supplierOrder; if (supplierOrder.tekcentralOperations.stage === "FULFILLED" || supplierOrder.status === "COMPLETED") throw new SupplierWorkflowError("INVALID_SUPPLIER_TRANSITION", "Fulfilled stock cannot be restored through cancellation. Use the future returns workflow.");
+  const actor = input.actor?.trim() || "TekCentral Staff"; for (const reservation of supplierOrder.tekcentralOperations.reservations) await releaseTekCentralManualReservation({ offerId: reservation.manualOfferId, supplierOrderId: supplierOrder.id, actor });
+  const now = new Date().toISOString(); const cancelled = await updateSupplierOrder(input.id, (current) => ({ ...current, status: "CANCELLED", updatedAt: now, notes: input.reason?.trim() || current.notes, tekcentralOperations: { ...current.tekcentralOperations!, stage: "CANCELLED", cancelledAt: now, reservations: current.tekcentralOperations!.reservations.map((item) => ({ ...item, releasedAt: item.releasedAt ?? now })) }, events: [...current.events, event("TEKCENTRAL_ALLOCATION_CANCELLED", `${actor} cancelled the internal allocation and released reserved stock.`)] }));
+  await updateOrder(supplierOrder.customerOrderNumber, (current) => ({ ...current, updatedAt: now, supplierAllocations: (current.supplierAllocations ?? []).map((item) => supplierOrder.allocationIds.includes(item.id) ? { ...item, status: "CANCELLED", updatedAt: now } : item) })); return cancelled;
+}
+
+export async function releaseTekCentralReservationsForCancelledOrder(orderNumber: string, actor = "TekCentral Staff") {
+  const orders = (await listSupplierOrders()).filter((item) => item.customerOrderNumber === orderNumber && item.supplierCode === "TEKCENTRAL" && item.status !== "CANCELLED" && item.status !== "COMPLETED");
+  for (const supplierOrder of orders) await cancelTekCentralSupplierOrder({ id: supplierOrder.id, actor, reason: "Customer order cancelled before fulfilment." });
+  return orders.length;
 }
 
 export async function mockSubmitSupplierOrder(id: string, scenario: MockSupplierScenario) {
@@ -768,6 +906,22 @@ export function deriveSupplierOrderAttention(
       detail: supplierOrder.cjOperations.attention.message,
       createdAt: supplierOrder.cjOperations.attention.createdAt,
     });
+  }
+  if (supplierOrder.supplierCode === "SYNTECH" && supplierOrder.status === "APPROVED" && supplierOrder.externalSubmission?.status !== "CREATED") {
+    const isRc3 = supplierOrder.externalSubmission?.lastErrorCode === "RC3";
+    reasons.push({
+      code: "SYNTECH_PROCUREMENT_REVIEW",
+      label: supplierOrder.externalSubmission?.status === "UNKNOWN_RESULT" ? "Syntech result unknown" : isRc3 ? "Procurement action required" : "Syntech procurement review",
+      detail: supplierOrder.externalSubmission?.status === "UNKNOWN_RESULT"
+        ? "Investigate the external reference before any retry"
+        : isRc3
+        ? "Syntech could not resolve the reseller accounting account. Do not retry the API submission. Place the order through the approved manual reseller-portal process and record the Syntech reference, or wait for Syntech account configuration to be corrected."
+        : supplierOrder.externalSubmission?.lastErrorMessage ?? "Approved Syntech procurement requires controlled staff action",
+      createdAt: supplierOrder.updatedAt,
+    });
+  }
+  if (supplierOrder.supplierCode === "TEKCENTRAL" && supplierOrder.status === "APPROVED" && supplierOrder.tekcentralOperations && supplierOrder.tekcentralOperations.stage !== "FULFILLED") {
+    reasons.push({ code: supplierOrder.tekcentralOperations.stage === "EXCEPTION" ? "TEKCENTRAL_FULFILMENT_EXCEPTION" : "TEKCENTRAL_FULFILMENT_REQUIRED", label: supplierOrder.tekcentralOperations.stage === "EXCEPTION" ? "Internal fulfilment exception" : "Internal fulfilment", detail: `TekCentral stock is ${supplierOrder.tekcentralOperations.stage.toLowerCase().replace(/_/g, " ")} and requires staff action.`, createdAt: supplierOrder.updatedAt });
   }
   return reasons;
 }

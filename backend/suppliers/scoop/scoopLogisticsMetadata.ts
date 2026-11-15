@@ -3,9 +3,9 @@ import type { ScoopLogisticsMetadata, ScoopLogisticsSource, ScoopLogisticsStatus
 const sourcePriority: Record<ScoopLogisticsSource, number> = {
   ADMIN: 5,
   ADMIN_IMPORT: 4.5,
-  SUPPLIER_FEED: 4,
+  SUPPLIER_PRODUCT_PAGE: 4,
+  SUPPLIER_FEED: 3.5,
   MANUFACTURER: 3,
-  SUPPLIER_PRODUCT_PAGE: 2,
   UNKNOWN: 1,
 };
 export const SCOOP_LOGISTICS_LIMITS = { maximumWeightGrams: 1_000_000, maximumDimensionMm: 10_000 } as const;
@@ -31,9 +31,34 @@ export function validateScoopLogisticsValues(input: { weightGrams?: number; leng
   if ([input.lengthMm, input.widthMm, input.heightMm].some((value) => value !== undefined) && [input.lengthMm, input.widthMm, input.heightMm].some((value) => value === undefined)) throw new Error("Enter length, width and height together.");
 }
 
-export function effectiveScoopLogisticsMetadata(records: ScoopLogisticsMetadata[] = []) {
-  return [...records].filter((record) => record.status !== "INVALID" && record.status !== "MISSING")
-    .sort((a, b) => sourcePriority[b.source] - sourcePriority[a.source] || Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+export function effectiveScoopLogisticsMetadata(records: ScoopLogisticsMetadata[] = []): ScoopLogisticsMetadata | undefined {
+  const valid = [...records].filter((record) => record.status !== "INVALID" && record.status !== "MISSING")
+    .sort((a, b) => sourcePriority[b.source] - sourcePriority[a.source] || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const admin = valid.find((record) => record.source === "ADMIN");
+  if (admin) return admin;
+  const product = valid.find((record) => record.measurementScope !== "PACKAGE") ?? valid[0];
+  const packageRecord = valid.find((record) => record.packageWeightGrams !== undefined && record.packageLengthMm !== undefined && record.packageWidthMm !== undefined && record.packageHeightMm !== undefined);
+  if (!packageRecord) return product;
+  return {
+    ...product,
+    source: packageRecord.source,
+    sourceReference: packageRecord.sourceReference,
+    status: "COMPLETE" as const,
+    weightGrams: packageRecord.packageWeightGrams,
+    lengthMm: packageRecord.packageLengthMm,
+    widthMm: packageRecord.packageWidthMm,
+    heightMm: packageRecord.packageHeightMm,
+    packageWeightGrams: packageRecord.packageWeightGrams,
+    packageLengthMm: packageRecord.packageLengthMm,
+    packageWidthMm: packageRecord.packageWidthMm,
+    packageHeightMm: packageRecord.packageHeightMm,
+    actualWeightKg: packageRecord.packageWeightGrams! / 1000,
+    volumeM3: packageRecord.packageLengthMm! * packageRecord.packageWidthMm! * packageRecord.packageHeightMm! / 1_000_000_000,
+    shippingBasis: "PACKAGE",
+    measurementScope: "PRODUCT_AND_PACKAGE",
+    productSource: product?.measurementScope === "PACKAGE" ? undefined : product?.source,
+    packageSource: packageRecord.source,
+  };
 }
 
 export function upsertScoopLogisticsSource(records: ScoopLogisticsMetadata[] = [], next: ScoopLogisticsMetadata) {

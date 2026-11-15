@@ -89,6 +89,8 @@ authoritative.
 - `POST /api/admin/supplier-orders/:id/cj/create`
 - `POST /api/admin/supplier-orders/:id/cj/reconcile`
 - `POST /api/admin/supplier-orders/:id/cj/refresh-status`
+- `POST /api/admin/supplier-orders/:id/syntech/preflight`
+- `POST /api/admin/supplier-orders/:id/syntech/create`
 - `POST /api/admin/supplier-orders/:id/mock-submit`
 - `PATCH /api/admin/supplier-orders/:id/mock-confirm`
 - `PATCH /api/admin/supplier-orders/:id/mock-reject`
@@ -165,6 +167,12 @@ Real CJ creation does not:
 - CJ credentials remain backend-only.
 - Mock supplier references are local testing references only.
 
+## SYNTECH PROCUREMENT
+
+Syntech API procurement is UAT-only and requires `supplier_orders.retry_api`. Server preflight derives the exact Syntech SKU, current dealer cost and stock, immutable cost basis, persisted delivery address, paid Order state, approval, and active procurement quantity from canonical repositories. The browser supplies only the SupplierOrder route identity, fulfilment mode, and explicit confirmation. A durable claim prevents duplicate submission; ambiguous outcomes become `UNKNOWN_RESULT` and cannot be retried without manual reconciliation.
+
+Production Syntech API ordering, status polling, tracking and cancellation are unsupported. The production fallback uses the shared manual procurement endpoint and requires `supplier_orders.update_status`: authorized staff place the approved order in the reseller portal and record a bounded external reference. The transition and H.2 event use the authenticated staff identity and do not alter customer payment, invoice, selling price or fulfilment state.
+
 ## ATTENTION REASONS
 
 Supplier order attention is backend-derived and can surface:
@@ -178,6 +186,27 @@ Supplier order attention is backend-derived and can surface:
 - overdue supplier dispatch
 
 These reasons are internal admin signals only.
+
+## PROCUREMENT VIABILITY AND FAILURE RECOVERY
+
+Supplier procurement capability is a server-owned registry decision, separate from Product content/readiness:
+
+| Supplier | Accepted production path | Automatic |
+| --- | --- | --- |
+| TEKCENTRAL | Internal/manual fulfilment | No |
+| SCOOP | Manual reseller portal | No |
+| SYNTECH | Manual reseller portal; production API disabled | No |
+| CJ | Controlled unpaid API create with manual downstream operations | No |
+| MUSTEK | Manual supplier procurement | No |
+| TVR | Manual supplier procurement | No |
+
+Publication and Order creation fail closed when the selected/verified supplier path is unsupported. Customer-facing rejection is always the supplier-neutral `This item is temporarily unavailable for purchase.` Supplier codes, raw response bodies, endpoint state, credentials and commercial diagnostics remain internal.
+
+A post-payment supplier failure leaves the paid customer Order and immutable invoice intact. It creates persisted SupplierOrder attention for staff. Approved manual recovery requires `supplier_orders.update_status`, a bounded external reference and authenticated `STAFF_USER` H.2 attribution. The repository mutation rechecks exclusivity so concurrent attempts cannot create two canonical placements. `UNKNOWN_RESULT` always requires reconciliation and cannot be blindly retried.
+
+Syntech `RC3` is normalized to `Procurement action required` with a safe, explicit no-retry/manual-fallback instruction. One deterministic rejection is operational attention rather than an H.1 supplier outage; repeated systemic provider failures continue to use the existing health policy. Successful manual placement advances the SupplierOrder to `ORDERED` and clears active attention while preserving historical failure evidence.
+
+Mustek and TVR use the same canonical manual SupplierOrder placement service as Scoop. They require a paid, mapped, approved SupplierOrder and an authenticated staff-entered bounded external reference; they do not require or claim a procurement API. The business brief's occasional `PVR` label refers to the registered `TVR` supplier identity—no separate PVR supplier exists.
 
 ## PENDING BUSINESS POLICY
 

@@ -1,6 +1,56 @@
 # Decisions
 
+## 2026-10-30 - PostgreSQL and Spaces are the production persistence baseline
+
+Status: Accepted
+
+TekCentral production uses DigitalOcean Managed PostgreSQL for authoritative structured business state and DigitalOcean Spaces through an S3-compatible abstraction for object bytes. Containers are stateless. Local JSON/files remain first-class development adapters but are prohibited for staging/production. Cutover is domain-by-domain using expand/import/verify/switch/retire; generic JSONB dumping is rejected. Managed rolling replacement is standard deployment, with blue/green reserved for unusually risky releases.
+
+## 2026-10-30 - Staff TOTP is the production second-factor baseline
+
+Status: Accepted
+
+TekCentral staff 2FA uses RFC 6238 authenticator-app TOTP plus one-time recovery codes. Password success creates a short-lived pre-auth challenge rather than a privileged session. TOTP secrets use application-layer AES-256-GCM with a server-only key; recovery values are hash-only. Production Super Admin and high-risk effective permissions require 2FA. WebAuthn is deferred behind clean factor extension points, and SMS OTP is explicitly excluded.
+
+## 2026-10-30 - Dedicated authenticated Admin security boundary
+
+Status: Accepted
+
+TekCentral Admin uses backend-authoritative staff sessions and granular permission checks for every privileged API. Production Admin is prepared for `admin.tekcentral.co.za`, separate from storefront origin and customer authentication. The current Vite codebase remains shared with a host-aware path abstraction; deployment may create a dedicated Admin build output without duplicating domain code. Storefront `/admin` should be excluded or return 404 rather than remain canonical.
+
+## Scoop feed and public-page responsibilities
+
+Scoop XML remains the commercial availability source. Public Product pages are a separate, read-only identity/specification/logistics evidence source. Authenticated URLs and browser sessions are unsupported. This separation prevents Product-page verification or publication from falsely refreshing stock evidence.
+
+## Phase G.3 is an operational conversation log, not an email client
+
+TekCentral extends its existing persisted Contact workflow with internal conversations and outbound messages. It does not ingest arbitrary mailbox traffic, implement IMAP, or claim mailbox read state. Internal conversation IDs are canonical; department mailboxes remain the destination for customer replies outside the Admin application.
+
+## Phase G.2 uses explicit homepage placement
+
+Homepage placement is represented by merchandising sections rather than another Product `featured` flag. Featured is manual-only by default; other sections may opt into deterministic taxonomy-scoped fallback. Promotions are bounded runtime overrides over approved public regular prices and are applied at the canonical public Product-list boundary. Campaigns are deferred because current sections and promotions do not justify a broader marketing model.
+
+## Zeus is a typed conversation workspace
+
+The Zeus customer experience is conversation-first. Canonical Product, order, address and policy data render through typed result components, while mutations remain excluded until an explicit structured-action contract is approved. The existing interactive Zeus scene remains the assistant identity.
+
+## Catalogue search is deterministic after intent interpretation
+
+Zeus uses controlled normalization and strict tool fields to interpret customer language. The server validates taxonomy against the canonical registry, derives brands from published Products where possible, and ranks canonical evidence deterministically. Embeddings, vector databases and external web search are deferred until measured catalogue-search quality demonstrates a need.
+
 Use this file for meaningful durable architectural and product decisions. Do not use it as a daily development diary.
+
+## 2026-10-23 - Zeus server-only provider boundary
+
+Status: Accepted
+
+Zeus uses a backend provider interface rather than a browser/provider integration. Phase A keeps validated client-supplied history because long-term memory is not yet justified; history is bounded and cannot include system or tool roles. A deterministic local provider enables development while DigitalOcean inference remains deferred. Security is enforced by customer-safe serializers and a fixed tool registry, not by model instructions alone.
+
+## 2026-10-23 - Zeus authenticated tools use session-owned execution context
+
+Status: Accepted
+
+Authenticated Zeus tools receive identity only through the server execution context populated from the existing HttpOnly customer session. Their schemas contain no identity fields. The provider receives minimal customer-safe projections only after a relevant tool call, while guest access and all mutations remain separate secure workflows.
 
 ## 2026-08-17 - Preserve Zeus
 
@@ -444,3 +494,171 @@ Reason:
 The backend rules were safe, but staff workflows were too easy to misread.
 Operational UX should make backend dependencies visible instead of allowing
 silent no-op attempts or misleading supplier metadata.
+
+## 2026-10-23 - DigitalOcean Serverless Inference for Zeus
+
+Status: Accepted
+
+Decision:
+Zeus retains its provider-independent server orchestration and adds DigitalOcean Serverless Inference as the first real model provider. Selection is explicit through `ZEUS_PROVIDER`; the deterministic local provider remains available and is the default for credential-free development.
+
+## Zeus launch quotas use request counts and pseudonymous persistence
+
+Phase C.3 uses configurable request-count allowances rather than weighted units. Deterministic cost tiers and token totals are recorded for aggregate operations, allowing evidence-based weighting later without making the first launch policy harder to reason about. A bounded 48-hour JSON store matches the current lightweight persistence architecture; quota identities are hashed and raw prompts or private tool payloads are never stored.
+
+## Zeus actions are server enums, not model URLs
+
+Phase C.4 keeps policy, authentication and support routing deterministic. The provider can request a canonical policy topic or express intent, but the server returns only approved action enums and safe context. Existing frontend routes, Contact categories and centralized business identity resolve the destination. This prevents arbitrary links, recipients, phone numbers and guest credentials from entering model-controlled output.
+
+DigitalOcean integration uses the OpenAI-compatible chat-completions endpoint, a configurable tool-capable model and a server-only model access key. Tool execution remains inside TekCentral's bounded registry loop. No DigitalOcean Agent, Knowledge Base, Function, App Platform app, Dedicated Inference resource or other infrastructure is provisioned by this decision.
+
+Reason:
+This introduces real conversational and tool-calling capability without moving customer authorization, supplier confidentiality or commerce decisions into the model, and without coupling Zeus to DigitalOcean-specific behavior above the provider boundary.
+
+## 2026-10-23 - Zeus Tool Progress and Account-Data Consent
+
+Status: Accepted
+
+Decision:
+Zeus normalizes and fingerprints tool calls within each request. Equivalent successful calls reuse safe evidence and trigger a tool-disabled final-answer pass; different calls remain available for legitimate sequential reasoning. Existing iteration and execution ceilings remain unchanged.
+
+Private customer tool output may reach an external AI provider only after explicit, versioned consent stored on the current server-managed session. Customers can decline or revoke consent, and revocation immediately blocks subsequent private tool execution. Authentication and frontend state alone are not consent.
+
+Reason:
+Real models may repeat function calls despite receiving successful results, and authenticated assistance introduces a distinct external-processing decision. Server-side loop progress and consent enforcement preserve cost control, data minimization and account ownership without weakening public product assistance.
+
+## 2026-10-27 - Zeus Identity and Business Knowledge Stay Server-Owned
+
+Status: Accepted
+
+Decision:
+Zeus has a versioned server-side identity as TekCentral's AI shopping and support assistant, built for TekCentral by Fabrice Isama. Provider/model and orchestration details are customer-confidential. Straightforward identity, confidentiality and business FAQ requests resolve deterministically; non-deterministic requests receive only one relevant bounded business-knowledge module. Canonical policy remains in the existing policy registry and live commerce facts remain behind registered tools. No external Knowledge Base or vector retrieval service is introduced.
+
+Reason:
+This gives Zeus a consistent TekCentral identity and useful stable business context while reducing paid inference, minimizing provider payloads, preventing duplicated policy truth, and keeping live commerce authority in TekCentral services.
+
+## 2026-10-25 - Zeus Provider Parsing Remains Strict and Isolated
+
+## 2026-10-25 - Zeus Uses the Shared Server-Owned Cart
+
+Status: Accepted
+
+Decision:
+The existing cart UI reconciles with one server-owned cart identified from the customer session or an opaque HttpOnly guest cookie. Zeus writes require a ten-minute pending action and explicit confirmation; completed actions retain their result for idempotent replay. Product price, publication and availability are revalidated at confirmation. No cart write is automatically retried, and Zeus cannot submit checkout or payment.
+
+Reason:
+The prior browser-only cart could not enforce ownership, tamper resistance or mutation idempotency. A shared service keeps the header, cart page, checkout and Zeus aligned without granting the model purchasing authority.
+
+## 2026-10-25 - First-party privacy-conscious storefront analytics
+
+Status: Accepted
+
+Decision:
+TekCentral uses a bounded first-party event store with opaque HttpOnly visitor sessions for traffic and funnel reporting. Browser events use a fixed enum and contain only normalized routes, canonical public Product identifiers and bounded search terms. Orders, revenue, availability and carts remain derived from their canonical backend services; Zeus metrics reuse its existing pseudonymous usage telemetry. Detailed activity expires after 30 days and daily aggregates after 400 days.
+
+Reason:
+Operational visibility is needed without introducing third-party trackers, session replay, raw conversation storage or a competing source of truth for commerce state.
+
+## 2026-10-26 - Customer support uses explicit account ownership
+
+Status: Accepted
+
+Decision:
+The admin Customers workspace is read-only and uses a dedicated least-privilege serializer. Registered-customer history contains only records with explicit `customerAccountId` ownership. Guest orders and contact enquiries are never attached solely because an email address matches. Paid spend is derived from immutable paid-order snapshots, and Zeus visibility is limited to safe consent/use summaries.
+
+Reason:
+Staff need a fast support view without weakening guest-order claims, exposing authentication records or creating invasive personal activity timelines.
+
+
+Status: Accepted
+
+Decision:
+DigitalOcean response compatibility is normalized only inside `DigitalOceanZeusProvider`. Valid text and registered tool-call variants are accepted, including the bounded inline argument form observed from `glm-5.3-flash`; every normalized call must still satisfy the canonical tool schema. Output-limit termination has its own safe error category and token usage remains accountable. No automatic provider retry is performed.
+
+Reason:
+Read-only catalogue assistance can tolerate a safe retry by the customer, while automatic retries increase cost and create an unsafe precedent for Phase E mutations. Unknown tools, malformed JSON and unsupported content must continue to fail closed.
+# Launch SEO and anti-abuse decisions
+
+- Use score-based Google reCAPTCHA v3 only on actual unauthenticated abuse-prone writes, loaded lazily per protected action.
+- Fail closed when verification is missing, invalid, unavailable, or misconfigured. A bypass is allowed only through explicit non-production configuration.
+- Use `https://tekcentral.co.za` as the canonical production origin while retaining environment-aware backend sitemap generation.
+- Derive sitemap Product and taxonomy URLs from published canonical catalogue data; omit fabricated `lastmod` values.
+- Keep the existing Vite SPA for this phase. Route metadata is hydrated client-side and crawl discovery is server-generated; production prerender/SSR remains a deployment architecture decision rather than a duplicate catalogue pipeline.
+
+# Supplier-neutral enrichment and Product galleries
+
+TekCentral uses one supplier-neutral canonical category suggestion service for Scoop, Syntech, CJ and manual Product workflows. The service returns confidence and evidence but never auto-verifies taxonomy.
+
+Canonical Product media remains an ordered array for backward compatibility and also exposes structured public media metadata. Index zero is primary. Public publication accepts only TekCentral-controlled assets, with a maximum of eight images.
+
+## 2026-10-28 - Operational events are separate from actionable alerts
+
+Status: Accepted
+
+Decision: TekCentral records bounded sanitized operational events and evaluates only business-significant failures into aggregated Admin alerts. Alert acknowledgement is not resolution, and alerts never replace canonical commerce state. Current lightweight persistence uses atomic bounded JSON behind a service abstraction; production staff authentication remains required before launch.
+
+Reason: Staff need immediate, actionable incident visibility without a noisy raw-log UI, duplicate health architecture, leaked customer/provider data, or observability becoming a new failure point.
+
+## 2026-10-29 - Unified Admin audit is an append-only projection
+
+Status: Accepted
+
+Decision: Important successful Admin mutations and meaningful system operations project into one read-only Audit / Activity stream. Alerts remain current incident state; canonical domain repositories remain authoritative. The initial actor model uses truthful `OPS` and `SYSTEM` labels and reserves optional authenticated-staff fields for the later staff-auth phase. The projection uses bounded atomic JSON, 365-day retention, safe summaries, allowlisted internal links, and idempotency hashes.
+
+Reason: Operations need one searchable history without fabricating old events, duplicating source-of-truth state, exposing secrets/PII, or implying named staff identities before production staff authentication exists.
+
+## 2026-10-29 - Production Storage and Admin Authentication Are Launch Gates
+
+Status: Accepted
+
+Decision:
+TekCentral's current atomic `.data` repositories remain valid development implementations behind repository boundaries, but App Platform local filesystems are not accepted as authoritative production commerce storage. Transactional, account, Product, supplier, Contact and settings state must migrate to durable managed persistence; controlled public assets must move to object storage; operational projections require durable retention and recovery. Every Admin page and `/api/admin/*` route must be protected by real staff authentication and authorization before public launch.
+
+Reason:
+Deploying the existing local stores unchanged could lose or split authoritative state across restarts or instances, while the provisional Admin access convention does not establish staff identity or least privilege.
+
+## 2026-10-29 - Syntech Manual Procurement Is the Safe Launch Fallback
+
+Status: Accepted
+
+Decision:
+When Syntech reseller API writes are disabled or UAT configuration is incomplete, Syntech SupplierOrders use the existing approval, manual reseller-portal procurement and recorded supplier-reference workflow. The controlled UAT workspace is shown only when the backend reports real-order submission capability. Production Syntech submission remains disabled unless a separately authorized integration phase proves it.
+
+Reason:
+Catalogue evidence and order allocation can remain operational without implying an unavailable supplier capability or weakening write guards.
+
+## 2026-10-29 - Staff Authorization Uses Canonical Permissions and Overrides
+
+Status: Accepted
+
+Decision:
+TekCentral defines six staff role bundles—Super Admin, Operations, Support, Catalogue, Finance and Auditor—over one canonical permission registry. Effective authority is the base role plus explicit grants minus explicit revocations, with revocation winning. Backend decisions check permissions rather than role names; Super Admin receives the complete permission set without bypassing guards. `SYSTEM` is not a staff role.
+
+Phase 1 retains a clearly marked full-permission provisional `OPS` context so existing Admin behavior remains unchanged. Future authenticated sessions will supply `STAFF_USER` identity and effective permissions, after which comprehensive route/action enforcement and 2FA follow in separate phases.
+
+Reason:
+Granular permissions support least privilege and exceptional staff responsibilities without role proliferation, while a single resolver keeps future backend enforcement, Admin UX and H.2 audit identity consistent and testable.
+
+## 2026-10-29 - Staff Authentication Is Separate, Invite-Only and Server-Session Based
+
+Status: Accepted
+
+Decision:
+Staff identities use a dedicated repository, credential/reset/invitation lifecycle and `tc_staff_session` cookie separate from customer authentication. Onboarding is invitation-only except for a one-time first-Super-Admin environment bootstrap. Tokens are random and hash-only at rest; sessions resolve current account and RBAC state on every lookup, expire after 12 hours or two hours of inactivity, and are revoked on reset, disablement or password rotation.
+
+The final active Super Admin cannot be disabled, demoted or stripped of critical recovery permissions. Authentication lifecycle events project `STAFF_USER` identity into H.2, automated work remains `SYSTEM`, and transitional development access remains `OPS`. Full Admin permission enforcement and 2FA remain separate phases.
+
+Reason:
+Admin access requires revocable, attributable staff identity without allowing customer sessions, stale permissions, plaintext credentials or permanent bootstrap secrets to become security boundaries.
+
+## 2026-11-09 - Admin AI is isolated from public Zeus
+
+Status: Accepted
+
+Decision:
+Admin AI uses a backend-only service boundary with independent `ADMIN_AI_*` configuration, credentials, instructions, model-role routing, usage metadata and operational logging. Public Zeus retains its own provider adapter and `ZEUS_*` configuration. Admin AI callers select only `PRIMARY` or `ROUTINE`; fallback is bounded service behavior, and the provider endpoint and model identifiers are not browser-controlled. The foundation has no HTTP generation route, tools, direct database access, persistence or business mutations.
+
+Future Admin AI actions must use permission-checked, bounded canonical service tools and a truthful dedicated automation identity. They must not impersonate the current staff account, Super Admin or OPS actor.
+
+Reason:
+Separate trust, cost, prompt, permission and audit boundaries prevent an internal operations assistant from inheriting customer-assistant behavior or bypassing canonical TekCentral services as later H.6 capabilities are introduced.

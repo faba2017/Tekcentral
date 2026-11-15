@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import { resolve } from "node:path";
+import { getStorefrontAnalytics, recordBrowserAnalytics, recordCartAddition, setStorefrontAnalyticsPathForTests, setStorefrontAnalyticsSourcesForTests } from "../storefrontAnalytics.js";
+
+let now = new Date("2026-10-25T10:00:00.000Z");
+const product = { id: "product-public", slug: "public-product", name: "Public Product", brand: "TekCentral", category: "Networking", categorySlug: "networking", price: 100, currency: "ZAR", isDemoPrice: false, shortDescription: "Current public Product", images: [], stockStatus: "in-stock", specifications: [], availability: { state: "IN_STOCK", label: "In stock", freshness: "FRESH", purchasable: true }, catalogueSource: "PUBLISHED" } as never;
+setStorefrontAnalyticsPathForTests(resolve("/tmp", `tekcentral-storefront-analytics-${process.pid}.json`));
+setStorefrontAnalyticsSourcesForTests({ now: () => now, products: async () => [product], orders: async () => [] as never, carts: async () => ({ total: 1, guest: 1, authenticated: 0, windowMinutes: 30 }), zeus: async () => ({ requests: 0, successful: 0, failed: 0, guest: 0, authenticated: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, averageLatencyMs: 0, quotaBlocks: 0, providerFailures: 0, toolLoopPrevents: 0, intents: {}, tools: {}, knowledgeAnswers: {}, recent: [] }) });
+
+await recordBrowserAnalytics("session-one", false, { eventId: "event-page-0001", type: "PAGE_VIEW", path: "/shop?private=ignored" });
+await recordBrowserAnalytics("session-one", false, { eventId: "event-product-0001", type: "PRODUCT_VIEW", path: "/product/public-product", productId: "product-public", category: "Networking" });
+await recordBrowserAnalytics("session-one", false, { eventId: "event-product-0001", type: "PRODUCT_VIEW", path: "/product/public-product", productId: "product-public" });
+await recordBrowserAnalytics("session-one", false, { eventId: "event-search-0001", type: "SEARCH", path: "/shop", searchTerm: "  Router <script>  ", resultCount: 0 });
+await recordBrowserAnalytics("session-one", false, { eventId: "event-checkout-01", type: "CHECKOUT_START", path: "/checkout" });
+await recordCartAddition("guest:opaque");
+let report = await getStorefrontAnalytics(1);
+assert.equal(report.kpis.visitorsOnline, 1);
+assert.equal(report.kpis.sessions, 1);
+assert.equal(report.kpis.productViews, 1);
+assert.equal(report.funnel.cartAdditions, 1);
+assert.equal(report.funnel.checkoutStarts, 1);
+assert.equal(report.popularProducts[0]?.id, "product-public");
+assert.equal(report.searches[0]?.noResults, 1);
+assert.equal(report.popularPages.some((item) => item.path.includes("?")), false);
+assert.equal(JSON.stringify(report).includes("session-one"), false);
+assert.equal(JSON.stringify(report).includes("<script>"), false);
+await assert.rejects(() => recordBrowserAnalytics("session-one", false, { eventId: "event-admin-0001", type: "PAGE_VIEW", path: "/admin/orders" }));
+await assert.rejects(() => recordBrowserAnalytics("session-one", false, { eventId: "event-private-01", type: "PRODUCT_VIEW", path: "/product/private", productId: "private-product" }));
+now = new Date("2026-10-25T10:06:00.000Z"); report = await getStorefrontAnalytics(1); assert.equal(report.kpis.visitorsOnline, 0);
+await recordBrowserAnalytics("session-one", true, { eventId: "event-heartbeat1", type: "HEARTBEAT", path: "/shop" }); report = await getStorefrontAnalytics(1); assert.equal(report.kpis.visitorsOnline, 1); assert.equal(report.kpis.sessions, 1);
+now = new Date("2026-10-25T10:37:01.000Z"); await recordBrowserAnalytics("session-one", true, { eventId: "event-new-session", type: "PAGE_VIEW", path: "/shop" }); report = await getStorefrontAnalytics(1); assert.equal(report.kpis.sessions, 2); assert.equal(report.audience.authenticatedSessions, 1);
+setStorefrontAnalyticsSourcesForTests();
+console.log("Storefront analytics tests passed.");

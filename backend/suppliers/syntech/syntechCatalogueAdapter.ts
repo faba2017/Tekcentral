@@ -1,0 +1,53 @@
+import { createHash } from "node:crypto";
+import { suggestSupplierCategoryMapping } from "../../supplierCategoryMappingRepository.js";
+import type { SyntechCatalogueProduct, SyntechFeedParseResult, SyntechSyncType } from "./syntechTypes.js";
+
+export type SyntechFeedFailureStage = "JSON_PARSE" | "ENVELOPE" | "COUNT" | "CURRENCY" | "PRODUCTS" | "ROW_SHAPE" | "ROW_SKU" | "NUMERIC_FIELD" | "DUPLICATE_SKU" | "COUNT_MISMATCH";
+export interface SyntechFeedDiagnostics { stage: SyntechFeedFailureStage; expectedCount?: number; parsedCount?: number; rowIndex?: number; duplicateCount?: number; observedFields?: string[]; field?: string; }
+export class SyntechFeedError extends Error {
+  constructor(public code: "NOT_CONFIGURED" | "INVALID_FEED" | "RATE_LIMITED" | "ACCOUNT_BLOCKED" | "UNAVAILABLE", message: string, public httpStatus?: number, public diagnostics?: SyntechFeedDiagnostics) { super(message); }
+}
+
+const absent = (value: unknown) => value === false || value === null || value === undefined || value === "" || value === "N/A";
+const finite = (value: unknown) => { if (absent(value)) return undefined; const number = Number(String(value).replace(/,/g, "")); return Number.isFinite(number) ? number : undefined; };
+const numeric = (raw: Record<string, unknown>, field: string, rowIndex: number) => { const value = raw[field]; const result = finite(value); if (!absent(value) && result === undefined) throw new SyntechFeedError("INVALID_FEED", `Syntech feed row ${rowIndex + 1} has an invalid numeric ${field} field.`, undefined, { stage: "NUMERIC_FIELD", rowIndex, field, observedFields: Object.keys(raw).sort() }); return result; };
+const text = (value: unknown) => typeof value === "string" && value.trim() && value !== "N/A" ? value.trim() : undefined;
+const identifier = (value: unknown) => typeof value === "string" ? text(value) : typeof value === "number" && Number.isFinite(value) ? String(value) : undefined;
+const list = (value: unknown, separator = /[,|]/) => Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : text(value)?.split(separator).map((item) => item.trim()).filter(Boolean) ?? [];
+const dateKey = (value?: string) => value?.slice(0, 10);
+
+export function syntechPromotionActive(input: { promoPriceExVat?: number; promoStarts?: string; promoEnds?: string }, now = new Date()) { const today = now.toISOString().slice(0, 10); return input.promoPriceExVat !== undefined && Boolean(dateKey(input.promoStarts) && dateKey(input.promoEnds) && today >= dateKey(input.promoStarts)! && today <= dateKey(input.promoEnds)!); }
+function attributes(value: unknown): SyntechCatalogueProduct["attributes"] { if (!value || typeof value !== "object" || Array.isArray(value)) return []; return Object.entries(value).filter(([, item]) => !absent(item) && String(item).trim()).map(([key, item]) => ({ key, value: String(item).trim() })); }
+function canonicalRecord(value: unknown, rowIndex: number) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new SyntechFeedError("INVALID_FEED", `Syntech feed row ${rowIndex + 1} is not an object.`, undefined, { stage: "ROW_SHAPE", rowIndex });
+  const outer = value as Record<string, unknown>; const productKey = Object.keys(outer).find((key) => key.toLowerCase() === "product"); const candidate = productKey && outer[productKey] && typeof outer[productKey] === "object" && !Array.isArray(outer[productKey]) ? outer[productKey] as Record<string, unknown> : outer;
+  return Object.fromEntries(Object.entries(candidate).map(([key, item]) => [key.toLowerCase(), item]));
+}
+
+function normalizeProduct(value: unknown, currency: string, observedAt: string, type: SyntechSyncType, rowIndex: number): SyntechCatalogueProduct {
+  const raw = canonicalRecord(value, rowIndex); const supplierSku = identifier(raw.sku);
+  if (!supplierSku) throw new SyntechFeedError("INVALID_FEED", `Syntech feed row ${rowIndex + 1} has no usable SKU.`, undefined, { stage: "ROW_SKU", rowIndex, observedFields: Object.keys(raw).sort() });
+  const attrs = attributes(raw.attributes); const readAttr = (key: string) => attrs.find((item) => item.key === key)?.value;
+  const normalDealerCostExVat = numeric(raw, "price", rowIndex); const promoPriceExVat = numeric(raw, "promo_price", rowIndex); const promoStarts = text(raw.promo_starts); const promoEnds = text(raw.promo_ends); const promotionActive = syntechPromotionActive({ promoPriceExVat, promoStarts, promoEnds }, new Date(observedAt));
+  const cpt = numeric(raw, "cptstock", rowIndex); const jhb = numeric(raw, "jhbstock", rowIndex); const dbn = numeric(raw, "dbnstock", rowIndex); const stocks = [cpt, jhb, dbn].filter((item): item is number => item !== undefined);
+  const sourceCategories = list(raw.categories); const sourceCategoryTrees = list(raw.categorytree ?? raw.categorytreealt, /\|/); const images = list(raw.additional_images); const featuredImage = text(raw.featured_image);
+  const fingerprintFields = type === "UPDATE" ? { sku: supplierSku, price: raw.price, rrp: raw.rrp_incl, promo: raw.promo_price, starts: raw.promo_starts, ends: raw.promo_ends, cpt: raw.cptstock, jhb: raw.jhbstock, dbn: raw.dbnstock, eta: raw.nextshipmenteta, modified: raw.last_modified } : raw;
+  const categoryPreview = suggestSupplierCategoryMapping({ supplierId: "SYNTECH", sourceCategoryPath: sourceCategoryTrees.join("|"), sourceCategoryLabel: sourceCategories.join(", "), productName: text(raw.name), supplierSku });
+  return { supplierId: "SYNTECH", supplierSku, name: text(raw.name), normalDealerCostExVat, rrpInclVat: numeric(raw, "rrp_incl", rowIndex), recommendedMargin: numeric(raw, "recommended_margin", rowIndex), promoPriceExVat, promoStarts, promoEnds, effectiveDealerCostExVat: promotionActive ? promoPriceExVat : normalDealerCostExVat, promotionActive, currency, branchStock: { ...(cpt !== undefined ? { CPT: cpt } : {}), ...(jhb !== undefined ? { JHB: jhb } : {}), ...(dbn !== undefined ? { DBN: dbn } : {}) }, totalStock: stocks.length ? stocks.reduce((sum, item) => sum + item, 0) : undefined, nextShipmentEta: text(raw.nextshipmenteta), productUrl: text(raw.url), description: text(raw.description), shortDescription: text(raw.shortdesc), weight: numeric(raw, "weight", rowIndex), dimensions: { length: numeric(raw, "length", rowIndex), width: numeric(raw, "width", rowIndex), height: numeric(raw, "height", rowIndex) }, featuredImage, additionalImages: images.filter((item) => item !== featuredImage), sourceCategories, sourceCategoryTrees, attributes: attrs, brand: readAttr("brand"), modelNumber: readAttr("model-number"), manufacturerPartNumber: readAttr("manufacturer-part-number"), lastModified: text(raw.last_modified), observedAt, sourceFingerprint: createHash("sha256").update(JSON.stringify(fingerprintFields)).digest("hex"), observedFields: Object.keys(raw), sourcePresence: "ACTIVE", taxonomyMappingStatus: categoryPreview.status === "UNMAPPED" ? "UNMAPPED" : "REVIEW_REQUIRED" };
+}
+
+export function parseSyntechJson(input: string | unknown, type: SyntechSyncType, now = new Date()): SyntechFeedParseResult {
+  let value: unknown; try { value = typeof input === "string" ? JSON.parse(input) : input; } catch { throw new SyntechFeedError("INVALID_FEED", "Syntech feed returned invalid JSON.", undefined, { stage: "JSON_PARSE" }); }
+  const envelope = (value as { syntechstock?: unknown })?.syntechstock; if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) throw new SyntechFeedError("INVALID_FEED", "Syntech JSON envelope is missing.", undefined, { stage: "ENVELOPE" });
+  const record = envelope as Record<string, unknown>; const expectedCount = finite(record.count); if (expectedCount === undefined) throw new SyntechFeedError("INVALID_FEED", "Syntech JSON envelope count is missing or invalid.", undefined, { stage: "COUNT" });
+  const currency = text(record.currency); if (!currency) throw new SyntechFeedError("INVALID_FEED", "Syntech JSON envelope currency is missing.", undefined, { stage: "CURRENCY", expectedCount });
+  if (!Array.isArray(record.products)) throw new SyntechFeedError("INVALID_FEED", "Syntech JSON products array is missing.", undefined, { stage: "PRODUCTS", expectedCount });
+  const observedAt = now.toISOString(); const products: SyntechCatalogueProduct[] = [];
+  for (let index = 0; index < record.products.length; index += 1) { try { products.push(normalizeProduct(record.products[index], currency, observedAt, type, index)); } catch (error) { if (error instanceof SyntechFeedError) { error.diagnostics = error.diagnostics ? { ...error.diagnostics, expectedCount, parsedCount: products.length } : { stage: "ROW_SHAPE", rowIndex: index, expectedCount, parsedCount: products.length }; } throw error; } }
+  const duplicateCount = products.length - new Set(products.map((item) => item.supplierSku)).size; if (duplicateCount) throw new SyntechFeedError("INVALID_FEED", `Syntech feed contains ${duplicateCount} duplicate SKU observation(s).`, undefined, { stage: "DUPLICATE_SKU", expectedCount, parsedCount: products.length, duplicateCount });
+  if (products.length !== expectedCount) throw new SyntechFeedError("INVALID_FEED", `Syntech feed parsed count does not match the envelope count.`, undefined, { stage: "COUNT_MISMATCH", expectedCount, parsedCount: products.length });
+  return { type, expectedCount, parsedCount: products.length, currency, products, observedAt };
+}
+
+export function syntechConfiguration() { const fullConfigured = Boolean(process.env.SYNTECH_FULL_FEED_URL); const updateConfigured = Boolean(process.env.SYNTECH_UPDATE_FEED_URL); return { enabled: process.env.SYNTECH_ENABLED === "true", configured: fullConfigured && updateConfigured, fullConfigured, updateConfigured, format: (process.env.SYNTECH_FEED_FORMAT ?? "JSON").toUpperCase() }; }
+export async function fetchSyntechFeed(type: SyntechSyncType, fetchImpl: typeof fetch = fetch) { const configuration = syntechConfiguration(); const url = type === "FULL" ? process.env.SYNTECH_FULL_FEED_URL : process.env.SYNTECH_UPDATE_FEED_URL; if (!configuration.enabled || !url) throw new SyntechFeedError("NOT_CONFIGURED", "Syntech feed is not configured."); const response = await fetchImpl(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(30_000) }); if (response.status === 429) throw new SyntechFeedError("RATE_LIMITED", "Syntech feed request limit reached.", 429); if (response.status === 403) throw new SyntechFeedError("ACCOUNT_BLOCKED", "Syntech account key is blocked; contact the Syntech account manager.", 403); if (!response.ok) throw new SyntechFeedError("UNAVAILABLE", `Syntech feed returned HTTP ${response.status}.`, response.status); return parseSyntechJson(await response.text(), type); }

@@ -34,6 +34,7 @@ Server-only:
 - `PAYFAST_MERCHANT_KEY`
 - `PAYFAST_PASSPHRASE`
 - `PAYFAST_MODE`
+- optional explicit `PAYFAST_SANDBOX_*` and `PAYFAST_LIVE_*` credential profiles
 - `PUBLIC_APP_URL`
 - `PUBLIC_API_URL`
 
@@ -42,6 +43,7 @@ Frontend-public:
 - `VITE_API_BASE_URL`
 
 `PAYFAST_MODE=sandbox` must be used until live launch is explicitly approved.
+Payment policy is managed at `/admin/settings/payments`; secrets remain environment-managed. See `docs/features/payments.md` for the gateway-neutral registry and profile rules.
 
 ## ITN VALIDATION
 
@@ -111,3 +113,4 @@ endpoint over public HTTPS.
 - Delivery pricing.
 - Payment operations process.
 - Refund timing and approval policy.
+Payment initialization and callback-verification failures create sanitized operational alerts with links to payment settings or the affected order. No signatures, merchant credentials, raw callback bodies or payment credentials are stored in alerts. Payment/order repositories remain authoritative.

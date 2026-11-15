@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { FiBriefcase, FiCpu, FiMessageCircle, FiShoppingBag } from "react-icons/fi";
-import { usePageTitle } from "@/lib/page-title";
+import { usePageMetadata } from "@/lib/page-metadata";
 
 const focusAreas = [
   {
@@ -21,7 +21,7 @@ const focusAreas = [
 ];
 
 export function AboutPage() {
-  usePageTitle("About | TekCentral");
+  usePageMetadata({ title: "About TekCentral", description: "Learn about TekCentral, a South African technology store for home, work and business.", path: "/about" });
 
   return (
     <section className="bg-white">

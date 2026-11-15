@@ -1,0 +1,20 @@
+name: tekcentral-persistence
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tekcentral_dev
+      POSTGRES_USER: tekcentral
+      POSTGRES_PASSWORD: local-development-only
+    ports:
+      - "${TEKCENTRAL_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - tekcentral-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tekcentral -d tekcentral_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  tekcentral-postgres:

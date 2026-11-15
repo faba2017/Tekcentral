@@ -11,12 +11,77 @@ export type ScoopLaunchBlocker =
   | "LOGISTICS_INCOMPLETE"
   | "PRICING_MISSING"
   | "PRICING_NOT_APPROVED"
+  | "PRICING_STALE"
   | "PRICING_BLOCKING_WARNING";
 
 export interface ScoopLaunchReadiness {
   status: ScoopLaunchReadinessStatus;
   blockers: ScoopLaunchBlocker[];
   nextAction: "Select for launch" | "Wait for XML commercial data" | "Wait for current stock" | "Verify mapping" | "Add shipping data" | "Generate price" | "Approve price" | "Review pricing warnings" | "Ready for publish review";
+}
+
+export interface ScoopPublicationLifecycle {
+  state: "NOT_PUBLISHED" | "READY_FOR_PUBLISH_REVIEW" | "PUBLISHED" | "UNPUBLISHED";
+  versionCount: number;
+  hasUnpublishedChanges?: boolean;
+}
+
+export type ScoopProductWorkflowStage = "UNMAPPED" | "MAPPING_REVIEW" | "LOGISTICS_REQUIRED" | "PRICING_REQUIRED" | "READY_FOR_LAUNCH_SELECTION" | "SELECTED_NOT_READY" | "READY_FOR_PUBLISH_REVIEW" | "PUBLISHED_CLEAN" | "PUBLISHED_CHANGES_PENDING" | "UNPUBLISHED_WITH_HISTORY";
+export type ScoopProductWorkflowAction = "Match or create product" | "Verify mapping" | "Resolve logistics" | "Confirm hardware revision" | "Review pricing" | "Select for launch" | "Review & Publish" | "View storefront" | "Review changes" | "Review & Republish" | "Review blockers";
+export interface ScoopProductWorkflow {
+  stage: ScoopProductWorkflowStage; primaryAction: ScoopProductWorkflowAction; completedLaunchChecks: number; totalLaunchChecks: 5;
+  completionState: "READY_FOR_PUBLISH_REVIEW" | "PUBLISHED" | "BLOCKED_LOGISTICS" | "BLOCKED_URL_IDENTITY" | "BLOCKED_PRICING" | "BLOCKED_MAPPING" | "DELIBERATELY_EXCLUDED" | "NEEDS_STAFF_REVIEW";
+  exactBlockers: string[];
+  steps: { id: "MAPPING" | "LOGISTICS" | "PRICING" | "LAUNCH_SELECTION" | "PUBLICATION"; label: string; status: string; complete: boolean }[];
+}
+
+export function deriveScoopProductWorkflow(input: { product: ScoopCatalogueProduct; mapping?: SupplierProductMapping; proposal?: PricingProposal; publication: ScoopPublicationLifecycle; publicationEligibility?: { canPublish: boolean; blockers: string[] } }): ScoopProductWorkflow {
+  const hasProduct = Boolean(input.mapping?.productId); const mappingVerified = input.mapping?.status === "VERIFIED"; const logisticsComplete = input.product.logisticsMetadata?.status === "COMPLETE"; const pricingApproved = input.proposal?.status === "APPROVED"; const selected = scoopAssortmentState(input.product) === "SELECTED_FOR_LAUNCH";
+  const readiness = deriveScoopLaunchReadiness(input); const checks = [hasProduct, mappingVerified, logisticsComplete, pricingApproved, selected];
+  let stage: ScoopProductWorkflowStage; let primaryAction: ScoopProductWorkflowAction;
+  if (!hasProduct) { stage = "UNMAPPED"; primaryAction = "Match or create product"; }
+  else if (!mappingVerified) { stage = "MAPPING_REVIEW"; primaryAction = "Verify mapping"; }
+  else if (!logisticsComplete) { stage = "LOGISTICS_REQUIRED"; primaryAction = input.product.logisticsLastFailure === "HARDWARE_REVISION_REQUIRED" ? "Confirm hardware revision" : "Resolve logistics"; }
+  else if (!pricingApproved) { stage = "PRICING_REQUIRED"; primaryAction = "Review pricing"; }
+  else if (!selected) { stage = "READY_FOR_LAUNCH_SELECTION"; primaryAction = "Select for launch"; }
+  else if (input.publication.state === "PUBLISHED" && input.publication.hasUnpublishedChanges) { stage = "PUBLISHED_CHANGES_PENDING"; primaryAction = "Review changes"; }
+  else if (input.publication.state === "PUBLISHED") { stage = "PUBLISHED_CLEAN"; primaryAction = "View storefront"; }
+  else if (input.publication.state === "UNPUBLISHED" && input.publication.versionCount > 0) { stage = "UNPUBLISHED_WITH_HISTORY"; primaryAction = readiness.status === "READY_FOR_PUBLISH_REVIEW" ? "Review & Republish" : "Review blockers"; }
+  else if (readiness.status === "READY_FOR_PUBLISH_REVIEW") { stage = "READY_FOR_PUBLISH_REVIEW"; primaryAction = "Review & Publish"; }
+  else { stage = "SELECTED_NOT_READY"; primaryAction = "Review blockers"; }
+  const publicationBlockers = input.publicationEligibility?.blockers.map((blocker) => blocker === "TekCentral-controlled primary image is missing." ? "PUBLIC_IMAGE_MISSING" : "PUBLIC_CONTENT_INCOMPLETE") ?? [];
+  const exactBlockers = [...readiness.blockers, ...(readiness.status === "READY_FOR_PUBLISH_REVIEW" ? publicationBlockers : [])];
+  const completionState: ScoopProductWorkflow["completionState"] = input.publication.state === "PUBLISHED" ? "PUBLISHED"
+    : !selected ? "DELIBERATELY_EXCLUDED"
+      : exactBlockers.includes("MAPPING_NOT_VERIFIED") ? "BLOCKED_MAPPING"
+        : exactBlockers.includes("LOGISTICS_INCOMPLETE") ? "BLOCKED_LOGISTICS"
+          : exactBlockers.some((item) => item.startsWith("PRICING_")) ? "BLOCKED_PRICING"
+            : exactBlockers.length ? "NEEDS_STAFF_REVIEW"
+              : "READY_FOR_PUBLISH_REVIEW";
+  if (readiness.status === "READY_FOR_PUBLISH_REVIEW" && publicationBlockers.length) { stage = "SELECTED_NOT_READY"; primaryAction = "Review blockers"; }
+  return { stage, primaryAction, completionState, exactBlockers, completedLaunchChecks: checks.filter(Boolean).length, totalLaunchChecks: 5, steps: [
+    { id: "MAPPING", label: "Mapping", status: mappingVerified ? "Verified" : hasProduct ? "Needs verification" : "Not matched", complete: mappingVerified },
+    { id: "LOGISTICS", label: "Logistics", status: logisticsComplete ? "Complete" : "Required", complete: logisticsComplete },
+    { id: "PRICING", label: "Pricing", status: pricingApproved ? "Approved" : input.proposal ? "Needs review" : "Required", complete: pricingApproved },
+    { id: "LAUNCH_SELECTION", label: "Launch selection", status: selected ? "Selected" : "Not selected", complete: selected },
+    { id: "PUBLICATION", label: "Publication", status: input.publication.state === "PUBLISHED" ? "Published" : readiness.status === "READY_FOR_PUBLISH_REVIEW" ? "Ready for review" : "Not published", complete: input.publication.state === "PUBLISHED" },
+  ] };
+}
+
+export function isInScoopLaunchReadinessCohort(input: { product: ScoopCatalogueProduct; mapping?: SupplierProductMapping; publication: ScoopPublicationLifecycle }) {
+  if (scoopAssortmentState(input.product) === "SELECTED_FOR_LAUNCH") return true;
+  if (input.mapping?.status !== "VERIFIED" || !input.mapping.productId) return false;
+  return input.publication.state === "PUBLISHED"
+    || (input.publication.state === "UNPUBLISHED" && input.publication.versionCount > 0);
+}
+
+export function deriveScoopPublicationAction(input: { readiness: ScoopLaunchReadiness; publication: ScoopPublicationLifecycle }) {
+  if (input.publication.state === "PUBLISHED") return input.publication.hasUnpublishedChanges
+    ? { primary: "Review changes" as const, secondary: "View storefront" as const }
+    : { primary: "View storefront" as const, secondary: "Manage publication" as const };
+  if (input.publication.state === "UNPUBLISHED" && input.publication.versionCount > 0) return { primary: "Review & Republish" as const, secondary: "Preview last published version" as const };
+  if (input.readiness.status === "READY_FOR_PUBLISH_REVIEW") return { primary: "Review & Publish" as const };
+  return { primary: input.readiness.nextAction };
 }
 
 const taxonomyTerms = [
@@ -34,6 +99,12 @@ const blockingWarnings = new Set([
 
 export function scoopAssortmentState(product: ScoopCatalogueProduct): ScoopLaunchAssortmentState {
   return product.launchAssortment?.state ?? "NOT_SELECTED";
+}
+
+export function isSelectedScoopLogisticsException(input: { product: ScoopCatalogueProduct; mapping?: SupplierProductMapping }) {
+  return scoopAssortmentState(input.product) === "SELECTED_FOR_LAUNCH"
+    && input.mapping?.status === "VERIFIED"
+    && input.product.logisticsMetadata?.status !== "COMPLETE";
 }
 
 export function scoopCandidateReasons(product: ScoopCatalogueProduct) {
@@ -76,6 +147,7 @@ export function deriveScoopLaunchReadiness(input: {
   if (input.product.logisticsMetadata?.status !== "COMPLETE") blockers.push("LOGISTICS_INCOMPLETE");
   if (!input.proposal) blockers.push("PRICING_MISSING");
   else if (input.proposal.status !== "APPROVED") blockers.push("PRICING_NOT_APPROVED");
+  else if (input.product.dealerPriceExVat !== undefined && input.proposal.costSnapshot?.supplierCostExVat !== undefined && input.proposal.costSnapshot.supplierCostExVat !== input.product.dealerPriceExVat) blockers.push("PRICING_STALE");
   const hasBlockingWarning = input.proposal?.warningDetails
     ? input.proposal.warningDetails.some((warning) => warning.severity === "BLOCKING")
     : input.proposal?.warnings.some((warning) => blockingWarnings.has(warning));
@@ -88,6 +160,7 @@ export function deriveScoopLaunchReadiness(input: {
         : blockers.includes("LOGISTICS_INCOMPLETE") ? "Add shipping data"
           : blockers.includes("PRICING_MISSING") ? "Generate price"
             : blockers.includes("PRICING_NOT_APPROVED") ? "Approve price"
+              : blockers.includes("PRICING_STALE") ? "Review pricing warnings"
               : blockers.includes("PRICING_BLOCKING_WARNING") ? "Review pricing warnings"
                 : "Ready for publish review";
   return { status: blockers.length ? "NOT_READY" : "READY_FOR_PUBLISH_REVIEW", blockers, nextAction };

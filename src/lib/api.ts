@@ -13,13 +13,20 @@ export class ApiError extends Error {
 }
 
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl}${path}`, {
+      credentials: "include",
+      ...init,
+      headers: {
+        ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+        ...init?.headers,
+      },
+    });
+  } catch (error) {
+    if (import.meta.env.DEV) console.error("API request could not reach backend", { method: init?.method ?? "GET", path, apiBaseUrl, error });
+    throw new ApiError("API request could not reach backend.", undefined, "NETWORK_UNAVAILABLE");
+  }
 
   const payload = (await response.json().catch(() => null)) as unknown;
 

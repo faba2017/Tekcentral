@@ -1,0 +1,20 @@
+import assert from "node:assert/strict";
+import { adminAiScheduleOccurrenceKey, nextAdminAiScheduleRun } from "../adminAi/automationSchedule.js";
+import { minimumAutonomy } from "../adminAi/policy.js";
+import { ADMIN_AI_AUTOMATION_EVENT_CATALOGUE, __adminAiAutomationServiceTest } from "../adminAi/automationService.js";
+
+const after = new Date("2026-11-13T06:45:30.000Z");
+assert.equal(nextAdminAiScheduleRun({ kind: "DAILY", localTime: "09:00" }, "Africa/Johannesburg", after).toISOString(), "2026-11-13T07:00:00.000Z");
+assert.equal(nextAdminAiScheduleRun({ kind: "WEEKLY", localTime: "09:00", weekdays: [1] }, "Africa/Johannesburg", after).toISOString(), "2026-11-16T07:00:00.000Z");
+assert.equal(nextAdminAiScheduleRun({ kind: "FIXED_INTERVAL", intervalMinutes: 60 }, "Africa/Johannesburg", after).toISOString(), "2026-11-13T07:45:30.000Z");
+assert.equal(adminAiScheduleOccurrenceKey("automation-1", after), "schedule:automation-1:2026-11-13T06:45:30.000Z");
+assert.equal(minimumAutonomy("AUTO", "PREPARE"), "PREPARE");
+assert.equal(minimumAutonomy("SUGGEST", "PREPARE"), "SUGGEST");
+assert.deepEqual(ADMIN_AI_AUTOMATION_EVENT_CATALOGUE,["PRODUCT_READINESS_CHANGED","ADMIN_AI_ACTION_FAILED"]);
+const eventDefinition = { id:"automation-1", triggerType:"EVENT", triggerConfiguration:{eventType:"PRODUCT_READINESS_CHANGED",entityType:"PRODUCT",entityId:"product-1"} };
+const event = { eventType:"PRODUCT_READINESS_CHANGED",entityType:"PRODUCT",entityId:"product-1" };
+assert.equal(__adminAiAutomationServiceTest.eventMatches(eventDefinition as never,event as never),true);
+assert.equal(__adminAiAutomationServiceTest.eventMatches({...eventDefinition,retiredAt:"2026-11-14T09:00:00.000Z"} as never,event as never),false);
+assert.equal(__adminAiAutomationServiceTest.eventMatches(eventDefinition as never,{...event,originAutomationId:"automation-1"} as never),false);
+assert.equal(__adminAiAutomationServiceTest.eventMatches(eventDefinition as never,{...event,entityId:"product-2"} as never),false);
+console.log("Admin AI automation runtime tests passed.");

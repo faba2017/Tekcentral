@@ -1,24 +1,18 @@
-import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { FiPackage } from "react-icons/fi";
-import { apiRequest } from "@/lib/api";
 import { formatCurrency } from "@/lib/format";
+import { readGuestOrderAccess } from "@/lib/guest-order-access";
 import { orderStatusLabels } from "@/lib/order-status";
 import { formatDateTime } from "@/lib/order-utils";
 import { usePageTitle } from "@/lib/page-title";
 import { useOrders } from "@/state/orders";
+import { useCustomerAuth } from "@/state/customer-auth";
 
 export function OrdersPage() {
   usePageTitle("Orders | TekCentral");
-  const { orders, replaceOrderMirrors } = useOrders();
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    apiRequest<{ orders: typeof orders }>("/api/orders")
-      .then((response) => replaceOrderMirrors(response.orders))
-      .catch(() => undefined)
-      .finally(() => setLoading(false));
-  }, [replaceOrderMirrors]);
+  const { orders } = useOrders();
+  const { state: authState } = useCustomerAuth();
+  const accessibleOrders = orders.filter((order) => Boolean(readGuestOrderAccess(order.orderNumber)));
 
   return (
     <section className="bg-[#F6F7F9] px-4 py-12 sm:px-6 lg:px-8">
@@ -31,11 +25,13 @@ export function OrdersPage() {
           Orders placed in this browser appear here.
         </p>
 
-        {loading ? (
-          <div className="mt-10 rounded-lg border border-[#E4E7EC] bg-white p-8 text-sm font-semibold text-[#727986]">
-            Loading orders...
+        {authState === "authenticated" ? (
+          <div className="mt-10 rounded-lg border border-[#E4E7EC] bg-white p-8">
+            <h2 className="text-2xl font-black text-[#0A0A0A]">Your account orders</h2>
+            <p className="mt-3 text-sm leading-6 text-[#3F4652]">View the orders securely linked to your TekCentral account.</p>
+            <Link to="/account/orders" className="mt-6 inline-flex rounded-md bg-[var(--tek-accent)] px-5 py-3 text-sm font-black text-[var(--tek-accent-ink)]">View Account Orders</Link>
           </div>
-        ) : orders.length === 0 ? (
+        ) : accessibleOrders.length === 0 ? (
           <div className="mt-10 rounded-lg border border-dashed border-[#BFC7D4] bg-white p-10 text-center">
             <FiPackage className="mx-auto text-3xl text-[var(--tek-accent)]" />
             <h2 className="mt-4 text-2xl font-black text-[#0A0A0A]">No orders yet.</h2>
@@ -51,7 +47,7 @@ export function OrdersPage() {
           </div>
         ) : (
           <div className="mt-10 space-y-4">
-            {orders.map((order) => (
+            {accessibleOrders.map((order) => (
               <article
                 key={order.id}
                 className="grid gap-4 rounded-lg border border-[#E4E7EC] bg-white p-5 shadow-sm md:grid-cols-[1.2fr_1fr_1fr_auto]"

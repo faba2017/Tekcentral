@@ -1,129 +1,48 @@
-import { FormEvent, useState } from "react";
-import { FiArrowRight, FiBriefcase, FiMessageCircle, FiPackage } from "react-icons/fi";
-import { Link } from "react-router-dom";
-import { usePageTitle } from "@/lib/page-title";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { FiBriefcase, FiCheckCircle, FiMessageCircle, FiPackage, FiPhone, FiShoppingBag } from "react-icons/fi";
+import { Link, useSearchParams } from "react-router-dom";
+import { usePageMetadata } from "@/lib/page-metadata";
+import { emailHref, publicBusiness } from "@/lib/public-business";
+import { apiRequest } from "@/lib/api";
+import { contactCategories, isContactCategory, orderContactCategories, productContactCategories, type ContactCategory, type ContactSubmissionResult } from "@/lib/contact";
+import type { AccountOrderPage, AccountOrderSummary } from "@/lib/account-orders";
+import { formatCurrency } from "@/lib/format";
+import { orderStatusLabels } from "@/lib/order-status";
+import { useCustomerAuth } from "@/state/customer-auth";
+import { executeRecaptcha } from "@/lib/recaptcha";
 
-const enquiryTypes = [
-  "Product enquiry",
-  "Business solution",
-  "Order support",
-  "Returns / warranty",
-  "General enquiry",
+const contactPaths = [
+  { title: "Order support", copy: "Review an account order or use your secure guest-order link for order-specific actions.", to: "/account/orders", action: "Open orders", icon: FiShoppingBag },
+  { title: "Product guidance", copy: "Browse current technology or ask Zeus for help comparing the right fit.", to: "/zeus", action: "Ask Zeus", icon: FiPackage },
+  { title: "Business enquiries", copy: "Plan procurement, networking, printing, security, power and office technology.", to: "/business", action: "TekCentral Business", icon: FiBriefcase },
 ];
+const contactChannels = [
+  { label: "General enquiries", address: publicBusiness.email.general }, { label: "Sales", address: publicBusiness.email.sales },
+  { label: "Customer support", address: publicBusiness.email.support }, { label: "Billing & accounts", address: publicBusiness.email.accounts },
+] as const;
+const blank = { category: "GENERAL_ENQUIRY" as ContactCategory, name: "", email: "", phone: "", orderNumber: "", productId: "", subject: "", message: "", website: "" };
+const fieldClass = "min-h-11 w-full min-w-0 rounded-md border border-[#D0D5DD] bg-white px-3 text-base text-[#101828] outline-none transition focus:border-[#469D8B] focus:ring-2 focus:ring-[#469D8B]/20 disabled:bg-[#F2F4F7]";
+const formatDate = (value: string) => new Intl.DateTimeFormat("en-ZA", { dateStyle: "medium" }).format(new Date(value));
 
 export function ContactPage() {
-  const [submitted, setSubmitted] = useState(false);
-  usePageTitle("Contact | TekCentral");
-
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setSubmitted(true);
-  };
-
-  return (
-    <section className="bg-[radial-gradient(circle_at_88%_12%,rgba(70,157,139,0.14),transparent_30%),linear-gradient(135deg,#F8FAFA_0%,#EEF5F3_100%)] px-4 py-12 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-6xl">
-        <div className="grid gap-6 lg:grid-cols-[0.82fr_1.18fr]">
-          <div className="rounded-lg bg-[radial-gradient(circle_at_80%_20%,rgba(70,157,139,0.24),transparent_34%),linear-gradient(135deg,#080A0A_0%,#0E1514_58%,#162A26_100%)] p-6 text-white sm:p-8">
-            <p className="text-sm font-black uppercase tracking-[0.18em] text-[var(--tek-accent)]">
-              Contact
-            </p>
-            <h1 className="mt-4 text-4xl font-black leading-tight sm:text-5xl">
-              Send a product or business enquiry.
-            </h1>
-            <p className="mt-5 text-base leading-7 text-white/72">
-              Share what you need and TekCentral will shape the right product or
-              business technology path.
-            </p>
-
-            <div className="mt-8 grid gap-3">
-              {[
-                { title: "Product guidance", icon: FiPackage },
-                { title: "Business planning", icon: FiBriefcase },
-                { title: "Zeus assistance", icon: FiMessageCircle },
-              ].map((item) => {
-                const Icon = item.icon;
-                return (
-                  <div
-                    key={item.title}
-                    className="flex items-center gap-3 rounded-md border border-white/12 bg-white/6 p-3"
-                  >
-                    <Icon className="text-[var(--tek-accent)]" aria-hidden="true" />
-                    <span className="text-sm font-bold">{item.title}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <form
-            onSubmit={handleSubmit}
-            className="rounded-lg border border-[#E4E7EC] bg-white p-6 shadow-sm sm:p-8"
-          >
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="grid gap-2 text-sm font-black text-[#0A0A0A]">
-                Name
-                <input
-                  required
-                  className="h-12 rounded-md border border-[#E4E7EC] bg-[#F6F7F9] px-4 text-sm font-semibold outline-none focus:border-[var(--tek-accent)] focus:bg-white focus:ring-4 focus:ring-[rgba(70,157,139,0.14)]"
-                  placeholder="Your name"
-                />
-              </label>
-              <label className="grid gap-2 text-sm font-black text-[#0A0A0A]">
-                Email
-                <input
-                  required
-                  type="email"
-                  className="h-12 rounded-md border border-[#E4E7EC] bg-[#F6F7F9] px-4 text-sm font-semibold outline-none focus:border-[var(--tek-accent)] focus:bg-white focus:ring-4 focus:ring-[rgba(70,157,139,0.14)]"
-                  placeholder="you@example.com"
-                />
-              </label>
-            </div>
-
-            <label className="mt-4 grid gap-2 text-sm font-black text-[#0A0A0A]">
-              Enquiry type
-              <select className="h-12 rounded-md border border-[#E4E7EC] bg-[#F6F7F9] px-4 text-sm font-semibold outline-none focus:border-[var(--tek-accent)] focus:bg-white focus:ring-4 focus:ring-[rgba(70,157,139,0.14)]">
-                {enquiryTypes.map((type) => (
-                  <option key={type}>{type}</option>
-                ))}
-              </select>
-            </label>
-
-            <label className="mt-4 grid gap-2 text-sm font-black text-[#0A0A0A]">
-              Message
-              <textarea
-                required
-                rows={6}
-                className="resize-none rounded-md border border-[#E4E7EC] bg-[#F6F7F9] px-4 py-3 text-sm font-semibold outline-none focus:border-[var(--tek-accent)] focus:bg-white focus:ring-4 focus:ring-[rgba(70,157,139,0.14)]"
-                placeholder="Tell us what technology you need."
-              />
-            </label>
-
-            {submitted && (
-              <p className="mt-4 rounded-md bg-[rgba(70,157,139,0.14)] px-4 py-3 text-sm font-bold text-[#0A0A0A]">
-                Enquiry noted. TekCentral contact handling will be available at
-                launch.
-              </p>
-            )}
-
-            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-              <button
-                type="submit"
-                className="inline-flex items-center justify-center gap-2 rounded-md bg-[var(--tek-accent)] px-5 py-3 text-sm font-black text-[var(--tek-accent-ink)] transition hover:bg-[var(--tek-accent-hover)]"
-              >
-                Send Enquiry
-                <FiArrowRight aria-hidden="true" />
-              </button>
-              <Link
-                to="/zeus"
-                className="inline-flex items-center justify-center rounded-md border border-[#E4E7EC] px-5 py-3 text-sm font-black text-[#0A0A0A] transition hover:border-[#0A0A0A]"
-              >
-                Ask Zeus Instead
-              </Link>
-            </div>
-          </form>
-        </div>
-      </div>
-    </section>
-  );
+  usePageMetadata("Contact Us | TekCentral", "Contact TekCentral for order support, product guidance and business technology enquiries.", "/contact");
+  const { state: authState, customer } = useCustomerAuth(); const [params] = useSearchParams();
+  const [form, setForm] = useState(() => { const category = params.get("category"); return { ...blank, category: isContactCategory(category) ? category : blank.category, productId: params.get("productId")?.trim() ?? "", orderNumber: params.get("orderNumber")?.trim().toUpperCase() ?? "" }; }); const [orders, setOrders] = useState<AccountOrderSummary[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState(false); const [submitting, setSubmitting] = useState(false); const [error, setError] = useState(""); const [result, setResult] = useState<ContactSubmissionResult>(); const edited = useRef(false);
+  const orderRelevant = orderContactCategories.includes(form.category); const productRelevant = productContactCategories.includes(form.category); const selectedOrder = orders.find((order) => order.orderNumber === form.orderNumber);
+  useEffect(() => { if (authState !== "authenticated" || !customer || edited.current) return; setForm((current) => ({ ...current, name: `${customer.firstName} ${customer.lastName}`.trim(), email: customer.email, phone: customer.phone ?? "" })); }, [authState, customer]);
+  useEffect(() => { if (authState !== "authenticated" || !orderRelevant || orders.length) return; let active = true; window.queueMicrotask(() => { if (active) setLoadingOrders(true); }); void apiRequest<AccountOrderPage>("/api/account/orders?page=1&pageSize=10").then((page) => { if (active) setOrders(page.orders); }).catch(() => undefined).finally(() => { if (active) setLoadingOrders(false); }); return () => { active = false; }; }, [authState, orderRelevant, orders.length]);
+  const update = (field: keyof typeof form, value: string) => { edited.current = true; setForm((current) => ({ ...current, [field]: value, ...(field === "category" ? { orderNumber: orderContactCategories.includes(value as ContactCategory) ? current.orderNumber : "", productId: productContactCategories.includes(value as ContactCategory) ? current.productId : "" } : {}) })); };
+  async function submit(event: FormEvent) { event.preventDefault(); if (submitting) return; setSubmitting(true); setError(""); try { const recaptchaToken = await executeRecaptcha("contact_submit"); const response = await apiRequest<ContactSubmissionResult>("/api/contact", { method: "POST", body: JSON.stringify({ ...form, sourcePage: window.location.pathname, recaptchaToken }) }); setResult(response); } catch { setError("We couldn't submit your enquiry right now. Please try again or contact us by email or phone."); } finally { setSubmitting(false); } }
+  return <main className="overflow-x-hidden bg-[#F6F7F9] px-4 py-12 sm:px-6 lg:px-8"><div className="mx-auto max-w-6xl"><header className="max-w-3xl"><p className="text-sm font-black uppercase tracking-[0.18em] text-[#176B5C]">Contact Us</p><h1 className="mt-3 text-4xl font-black leading-tight sm:text-5xl">How can we help?</h1><p className="mt-4 text-base font-semibold leading-7 text-[#475467]">Send a structured enquiry or use the direct contact channels below.</p></header>
+  <div className="mt-8 grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.75fr)]"><section className="min-w-0 rounded-lg border border-[#E4E7EC] bg-white p-5 shadow-sm sm:p-8" aria-labelledby="contact-form-heading">{result ? <div role="status" className="py-10 text-center"><FiCheckCircle className="mx-auto h-10 w-10 text-[#067647]" /><h2 className="mt-4 text-2xl font-black">Thanks, we've received your enquiry.</h2><p className="mt-2 text-sm text-[#667085]">Reference {result.reference}</p><button type="button" className="mt-6 rounded-md border border-[#D0D5DD] px-4 py-3 text-sm font-black" onClick={() => { setResult(undefined); setForm((current) => ({ ...blank, name: current.name, email: current.email, phone: current.phone })); }}>Send another enquiry</button></div> : <form onSubmit={submit}><h2 id="contact-form-heading" className="text-2xl font-black">Send an enquiry</h2><div className="mt-6 grid gap-5 sm:grid-cols-2"><Field label="Enquiry type" required><select value={form.category} onChange={(event) => update("category", event.target.value)} className={fieldClass}><option value="" disabled>Select an enquiry type</option>{contactCategories.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field><Field label="Name" required><input className={fieldClass} value={form.name} onChange={(event) => update("name", event.target.value)} autoComplete="name" maxLength={120} required /></Field><Field label="Email" required><input className={fieldClass} type="email" value={form.email} onChange={(event) => update("email", event.target.value)} autoComplete="email" maxLength={254} required /></Field><Field label="Phone (optional)"><input className={fieldClass} type="tel" value={form.phone} onChange={(event) => update("phone", event.target.value)} autoComplete="tel" maxLength={25} /></Field>
+  {orderRelevant && <Field label={authState === "authenticated" ? "Order (optional)" : "Order number (optional)"}>{authState === "authenticated" ? <select className={fieldClass} value={form.orderNumber} onChange={(event) => update("orderNumber", event.target.value)} disabled={loadingOrders}><option value="">{loadingOrders ? "Loading orders..." : "Select an order"}</option>{orders.map((order) => <option value={order.orderNumber} key={order.orderNumber}>{order.orderNumber} · {formatDate(order.createdAt)} · {orderStatusLabels[order.orderStatus]} · {formatCurrency(order.total, order.currency)}</option>)}</select> : <input className={fieldClass} value={form.orderNumber} onChange={(event) => update("orderNumber", event.target.value)} placeholder="TC-2026-000001" maxLength={32} />}</Field>}
+  {productRelevant && <Field label="Product reference (optional)"><input className={fieldClass} value={form.productId} onChange={(event) => update("productId", event.target.value)} maxLength={120} placeholder="Product ID" /></Field>}
+  <Field label="Subject (optional)" wide><input className={fieldClass} value={form.subject} onChange={(event) => update("subject", event.target.value)} maxLength={160} /></Field><Field label="Message" wide required><textarea className={`${fieldClass} min-h-36 resize-y py-3`} value={form.message} onChange={(event) => update("message", event.target.value)} minLength={10} maxLength={5000} required /></Field><div className="absolute -left-[10000px] top-auto h-px w-px overflow-hidden" aria-hidden="true"><label>Website<input tabIndex={-1} autoComplete="off" value={form.website} onChange={(event) => update("website", event.target.value)} /></label></div></div>
+  {selectedOrder && <WorkflowHelp category={form.category} order={selectedOrder} />}{form.category === "ACCOUNT_LOGIN_HELP" && authState !== "authenticated" && <p className="mt-5 rounded-md bg-[#F2F4F7] p-4 text-sm">Trying to regain access? <Link className="font-black text-[#176B5C] underline" to="/account">Use Forgot Password</Link>. You can still send this enquiry.</p>}{error && <p role="alert" className="mt-5 rounded-md bg-[#FEF3F2] p-4 text-sm font-bold text-[#B42318]">{error} Email <a className="underline" href={emailHref(publicBusiness.email.support)}>{publicBusiness.email.support}</a> or call <a className="underline" href={publicBusiness.phone.href}>{publicBusiness.phone.display}</a>.</p>}<button disabled={submitting} className="mt-6 w-full rounded-md bg-[var(--tek-accent)] px-5 py-3 font-black text-[var(--tek-accent-ink)] disabled:cursor-wait disabled:opacity-60">{submitting ? "Submitting..." : "Submit enquiry"}</button></form>}</section>
+  <aside className="min-w-0 space-y-5"><section className="rounded-lg border border-[#E4E7EC] bg-white p-5"><h2 className="text-xl font-black">Direct contact</h2><div className="mt-5 space-y-4">{contactChannels.map((channel) => <div key={channel.label}><p className="text-xs font-bold text-[#667085]">{channel.label}</p><a className="mt-1 block break-all font-black text-[#176B5C] hover:underline" href={emailHref(channel.address)}>{channel.address}</a></div>)}<div><p className="text-xs font-bold text-[#667085]">Telephone</p><a className="mt-1 inline-flex items-center gap-2 font-black text-[#176B5C] hover:underline" href={publicBusiness.phone.href}><FiPhone />{publicBusiness.phone.display}</a></div></div></section><section className="rounded-lg bg-[#0A0A0A] p-5 text-white"><p className="text-xs font-black uppercase text-[var(--tek-accent)]">Registered business</p><h2 className="mt-2 text-xl font-black">{publicBusiness.legalName}</h2><p className="mt-1 text-sm text-zinc-300">Registration No. {publicBusiness.registrationNumber}</p><address className="mt-4 text-sm not-italic leading-6 text-zinc-300">{publicBusiness.registeredAddress.lines.map((line) => <span className="block" key={line}>{line}</span>)}</address><a className="mt-4 inline-flex text-sm font-black text-[var(--tek-accent)] underline" href={publicBusiness.websiteUrl}>{publicBusiness.websiteLabel}</a></section></aside></div>
+  <div className="mt-8 grid gap-4 lg:grid-cols-3">{contactPaths.map((item) => { const Icon = item.icon; return <article key={item.title} className="rounded-lg border border-[#E4E7EC] bg-white p-6 shadow-sm"><Icon className="h-6 w-6 text-[#176B5C]" /><h2 className="mt-4 text-xl font-black">{item.title}</h2><p className="mt-2 text-sm leading-6 text-[#667085]">{item.copy}</p><Link to={item.to} className="mt-5 inline-flex rounded-md border border-[#B9E2DB] px-4 py-2.5 text-sm font-black text-[#176B5C]">{item.action}</Link></article>; })}</div><Link to="/refund-policy" className="mt-8 inline-flex items-center gap-2 text-sm font-black text-[#176B5C] underline"><FiMessageCircle />Customer policies</Link></div></main>;
 }
+
+function Field({ label, required, wide, children }: { label: string; required?: boolean; wide?: boolean; children: ReactNode }) { return <label className={wide ? "sm:col-span-2" : ""}><span className="mb-2 block text-sm font-black text-[#344054]">{label}{required ? " *" : ""}</span>{children}</label>; }
+function WorkflowHelp({ category, order }: { category: ContactCategory; order: AccountOrderSummary }) { const detail = `/account/orders/${encodeURIComponent(order.orderNumber)}`; if (category === "RETURNS_REFUNDS") return <div className="mt-5 rounded-md border border-[#B9E2DB] bg-[#EFFFFB] p-4 text-sm"><p>For returns on an existing order, submit and track the return directly from your order.</p><Link className="mt-3 inline-flex font-black text-[#176B5C] underline" to={order.returnEligible ? `/order/${encodeURIComponent(order.orderNumber)}/return` : detail}>{order.returnEligible ? "View Order / Start Return" : "View Order"}</Link><p className="mt-2 text-xs text-[#667085]">You can still contact support using this form.</p></div>; if (category === "CANCELLATION_REQUEST") return <div className="mt-5 rounded-md bg-[#F2F4F7] p-4 text-sm">Cancellation is never automatic from this form. <Link className="font-black text-[#176B5C] underline" to={detail}>Open the order</Link> to review its available actions.</div>; if (category === "DELIVERY_TRACKING") return <div className="mt-5 rounded-md bg-[#F2F4F7] p-4 text-sm"><Link className="font-black text-[#176B5C] underline" to={detail}>View order and tracking</Link>. You can still send a delivery enquiry.</div>; return <div className="mt-5 rounded-md bg-[#F2F4F7] p-4 text-sm"><Link className="font-black text-[#176B5C] underline" to={detail}>View selected order</Link></div>; }

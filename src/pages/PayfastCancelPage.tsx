@@ -6,6 +6,7 @@ import { readPayfastCartSnapshot } from "@/lib/payfast-cart";
 import { usePageTitle } from "@/lib/page-title";
 import { useCart } from "@/state/cart";
 import { useOrders } from "@/state/orders";
+import { guestOrderAccessHeaders, usePrivateOrderPage } from "@/lib/guest-order-access";
 
 export function PayfastCancelPage() {
   usePageTitle("Payment cancelled | TekCentral");
@@ -14,11 +15,13 @@ export function PayfastCancelPage() {
   const { restoreCart } = useCart();
   const { updatePaymentStatus } = useOrders();
   const [statusUpdated, setStatusUpdated] = useState(false);
+  usePrivateOrderPage(orderNumber);
 
   useEffect(() => {
     if (!orderNumber) return;
     apiRequest<{ paymentStatus: "CANCELLED" }>("/api/payments/payfast/cancel", {
       method: "POST",
+      headers: guestOrderAccessHeaders(orderNumber),
       body: JSON.stringify({ orderNumber }),
     })
       .then(() => {

@@ -7,28 +7,31 @@ import { paymentStatusLabels } from "@/lib/order-status";
 import { formatDateTime } from "@/lib/order-utils";
 import { usePageTitle } from "@/lib/page-title";
 import { useOrders } from "@/state/orders";
+import { guestOrderAccessHeaders, usePrivateOrderPage } from "@/lib/guest-order-access";
 
 export function OrderConfirmationPage() {
   usePageTitle("Order received | TekCentral");
   const { orderNumber = "" } = useParams();
-  const { getOrder, saveOrderMirror } = useOrders();
+  const { saveOrderMirror } = useOrders();
   const [loading, setLoading] = useState(Boolean(orderNumber));
-  const localOrder = getOrder(orderNumber);
-  const [backendOrder, setBackendOrder] = useState(localOrder);
-  const order = backendOrder ?? localOrder;
+  const [backendOrder, setBackendOrder] = useState<Parameters<typeof saveOrderMirror>[0]>();
+  const [accessFailed, setAccessFailed] = useState(false);
+  const order = backendOrder;
+  usePrivateOrderPage(orderNumber);
 
   useEffect(() => {
     if (!orderNumber) {
       return;
     }
-    apiRequest<{ order: NonNullable<typeof localOrder> }>(
+    apiRequest<{ order: Parameters<typeof saveOrderMirror>[0] }>(
       `/api/orders/${encodeURIComponent(orderNumber)}`,
+      { headers: guestOrderAccessHeaders(orderNumber) },
     )
       .then((response) => {
         setBackendOrder(response.order);
         saveOrderMirror(response.order);
       })
-      .catch(() => undefined)
+      .catch(() => setAccessFailed(true))
       .finally(() => setLoading(false));
   }, [orderNumber, saveOrderMirror]);
 
@@ -36,16 +39,20 @@ export function OrderConfirmationPage() {
     return <LoadingOrder />;
   }
 
-  if (!order) {
+  if (!order || accessFailed) {
     return (
       <section className="bg-white px-4 py-12 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-3xl rounded-lg border border-[#E4E7EC] bg-white p-8 text-center shadow-sm">
-          <h1 className="text-3xl font-black text-[#0A0A0A]">Order not found.</h1>
+          <h1 className="text-3xl font-black text-[#0A0A0A]">We couldn't access this order.</h1>
+          <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-[#3F4652]">
+            Sign in to view an account order, or return to the shop.
+          </p>
+          <Link to={`/account?redirect=${encodeURIComponent(`/order/${orderNumber}/confirmation`)}`} className="mt-6 inline-flex rounded-md bg-[var(--tek-accent)] px-5 py-3 text-sm font-black text-[var(--tek-accent-ink)]">Sign In</Link>
           <Link
-            to="/orders"
-            className="mt-6 inline-flex rounded-md bg-[var(--tek-accent)] px-5 py-3 text-sm font-black text-[var(--tek-accent-ink)]"
+            to="/shop"
+            className="ml-3 mt-6 inline-flex rounded-md border border-[#E4E7EC] px-5 py-3 text-sm font-black text-[#0A0A0A]"
           >
-            View Orders
+            Shop Technology
           </Link>
         </div>
       </section>

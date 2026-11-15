@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { useStorefrontCatalogue } from "@/state/catalogue";
+import { confirmPendingCartAction, createPendingCartAction, getServerCart, replaceServerCart } from "@/lib/cart-api";
 
 export interface CartLine {
   productId: string;
@@ -64,48 +65,28 @@ export function CartProvider({ children }: { children: ReactNode }) {
     window.localStorage.setItem(storageKey, JSON.stringify(lines));
   }, [lines]);
 
+  useEffect(() => { let active = true; void getServerCart().then(async (cart) => { if (!active) return; if (cart.lines.length === 0) { const local = readInitialCart(); if (local.length) { const migrated = await replaceServerCart(local); if (active) setLines(migrated.lines.map(({ productId, quantity }) => ({ productId, quantity }))); } else setLines([]); } else setLines(cart.lines.map(({ productId, quantity }) => ({ productId, quantity }))); }).catch(() => undefined); return () => { active = false; }; }, []);
+
   const addProduct = useCallback((productId: string, quantity = 1) => {
     const now = Date.now();
     if (recentAddsRef.current[productId] && now - recentAddsRef.current[productId] < 650) return;
     recentAddsRef.current = { ...recentAddsRef.current, [productId]: now };
-    setLines((current) => {
-      const existing = current.find((line) => line.productId === productId);
-      if (existing) {
-        return current.map((line) =>
-          line.productId === productId
-            ? { ...line, quantity: Math.min(99, line.quantity + quantity) }
-            : line,
-        );
-      }
-      return [...current, { productId, quantity: Math.max(1, quantity) }];
-    });
     const product = products.find((item) => item.id === productId);
-    setToast({
-      id: now,
-      productName: product?.name ?? "Product",
-      quantity: Math.max(1, quantity),
-    });
+    void createPendingCartAction("ADD", productId, quantity).then((pending) => confirmPendingCartAction(pending.pendingActionId)).then((result) => { if (result.cart) { setLines(result.cart.lines.map(({ productId: id, quantity: amount }) => ({ productId: id, quantity: amount }))); setToast({ id: now, productName: product?.name ?? "Product", quantity: Math.max(1, quantity) }); } }).catch(() => undefined);
   }, [products]);
 
   const dismissToast = useCallback(() => setToast(undefined), []);
 
   const removeProduct = useCallback((productId: string) => {
-    setLines((current) => current.filter((line) => line.productId !== productId));
+    void createPendingCartAction("REMOVE", productId, 1).then((pending) => confirmPendingCartAction(pending.pendingActionId)).then((result) => { if (result.cart) setLines(result.cart.lines.map(({ productId: id, quantity }) => ({ productId: id, quantity }))); }).catch(() => undefined);
   }, []);
 
   const updateQuantity = useCallback((productId: string, quantity: number) => {
-    setLines((current) =>
-      current
-        .map((line) =>
-          line.productId === productId
-            ? { ...line, quantity: Math.max(0, Math.min(99, quantity)) }
-            : line,
-        )
-        .filter((line) => line.quantity > 0),
-    );
-  }, []);
+    if (quantity <= 0) { removeProduct(productId); return; }
+    void createPendingCartAction("UPDATE", productId, quantity).then((pending) => confirmPendingCartAction(pending.pendingActionId)).then((result) => { if (result.cart) setLines(result.cart.lines.map(({ productId: id, quantity: amount }) => ({ productId: id, quantity: amount }))); }).catch(() => undefined);
+  }, [removeProduct]);
 
-  const clearCart = useCallback(() => setLines([]), []);
+  const clearCart = useCallback(() => { setLines([]); void replaceServerCart([]).catch(() => undefined); }, []);
   const restoreCart = useCallback((nextLines: CartLine[]) => {
     setLines(
       nextLines.filter(
@@ -115,6 +96,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
           line.quantity > 0,
       ),
     );
+    void replaceServerCart(nextLines).catch(() => undefined);
   }, []);
 
   const value = useMemo(() => {

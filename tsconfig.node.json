@@ -3,9 +3,11 @@
     "composite": true,
     "skipLibCheck": true,
     "module": "ESNext",
+    "target": "ES2022",
+    "noEmit": true,
     "moduleResolution": "Node",
     "allowSyntheticDefaultImports": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.ts", "backend/httpSecurity.ts"]
 }

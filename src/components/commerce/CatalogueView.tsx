@@ -1,7 +1,6 @@
 import { FormEvent, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { FiArrowRight, FiFilter, FiSearch, FiX } from "react-icons/fi";
-import { categories } from "@/data/catalogue";
 import { useStorefrontCatalogue } from "@/state/catalogue";
 import {
   filterProducts,
@@ -14,10 +13,13 @@ import { useCart } from "@/state/cart";
 import { useComparison } from "@/state/comparison";
 import type { StockStatus } from "@/types/product";
 import { ProductCard } from "@/components/commerce/ProductCard";
-import { usePageTitle } from "@/lib/page-title";
+import { breadcrumbJsonLd, usePageMetadata } from "@/lib/page-metadata";
+import { recordStorefrontEvent } from "@/lib/storefront-analytics";
 
 interface CatalogueViewProps {
   categorySlug?: string;
+  subcategorySlug?: string;
+  productTypeSlug?: string;
 }
 
 const availabilityOptions: Array<{ value: StockStatus | "all"; label: string }> = [
@@ -36,18 +38,23 @@ const sortOptions: Array<{ value: SortOption; label: string }> = [
   { value: "newest", label: "Newest" },
 ];
 
-export function CatalogueView({ categorySlug }: CatalogueViewProps) {
-  const { products } = useStorefrontCatalogue();
+export function CatalogueView({ categorySlug, subcategorySlug, productTypeSlug }: CatalogueViewProps) {
+  const { products, taxonomy } = useStorefrontCatalogue();
   const [params, setParams] = useSearchParams();
   const [filtersOpen, setFiltersOpen] = useState(false);
   const { addProduct } = useCart();
   const { toggleProduct, isComparing } = useComparison();
-  const category = categories.find((item) => item.slug === categorySlug);
-  usePageTitle(category ? `${category.name} | TekCentral` : "Shop | TekCentral");
+  const canonicalCategory = taxonomy.find((item) => item.slug === categorySlug || item.id === categorySlug || item.aliases?.includes(categorySlug ?? ""));
+  const category = canonicalCategory;
+  const subcategory = canonicalCategory?.children.find((item) => item.slug === subcategorySlug || item.id === subcategorySlug || item.aliases?.includes(subcategorySlug ?? ""));
+  const productType = subcategory?.productTypes?.find((item) => item.slug === productTypeSlug || item.id === productTypeSlug || item.aliases?.includes(productTypeSlug ?? ""));
+  const heading = productType?.label ?? subcategory?.label ?? category?.label ?? "Shop Technology";
+  const canonicalPath = productType ? `/shop/${category!.slug}/${subcategory!.slug}/${productType.slug}` : subcategory ? `/shop/${category!.slug}/${subcategory.slug}` : category ? `/shop/${category.slug}` : "/shop";
+  usePageMetadata({ title: `${heading} | TekCentral`, description: category?.description ?? "Browse computers, networking, printing, security, power and smart technology from TekCentral.", path: canonicalPath, robots: params.size ? "noindex,nofollow" : "index,follow", jsonLd: breadcrumbJsonLd([{ name: "Home", path: "/" }, { name: "Shop", path: "/shop" }, ...category ? [{ name: category.label, path: `/shop/${category.slug}` }] : [], ...subcategory ? [{ name: subcategory.label, path: `/shop/${category!.slug}/${subcategory.slug}` }] : [], ...productType ? [{ name: productType.label, path: canonicalPath }] : []]) });
   const bounds = getPriceBounds(products);
   const brands = getBrands(
     categorySlug
-      ? products.filter((product) => product.categorySlug === categorySlug)
+      ? products.filter((product) => product.categoryId === canonicalCategory?.id)
       : products,
   );
 
@@ -61,7 +68,8 @@ export function CatalogueView({ categorySlug }: CatalogueViewProps) {
     sort: (params.get("sort") ?? "featured") as SortOption,
   };
 
-  const results = sortProducts(filterProducts(products, filters), filters.sort);
+  const filterCategory = taxonomy.find((item) => item.slug === filters.category || item.id === filters.category);
+  const results = sortProducts(filterProducts(products, { ...filters, category: "" }).filter((product) => (!canonicalCategory || product.categoryId === canonicalCategory.id) && (!subcategory || product.subcategoryId === subcategory.id) && (!productType || product.productTypeId === productType.id) && (!filterCategory || product.categoryId === filterCategory.id)), filters.sort);
 
   const setFilter = (key: string, value: string) => {
     const next = new URLSearchParams(params);
@@ -73,7 +81,17 @@ export function CatalogueView({ categorySlug }: CatalogueViewProps) {
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    setFilter("q", String(form.get("q") ?? "").trim());
+    const query = String(form.get("q") ?? "").trim();
+    setFilter("q", query);
+    if (query) {
+      const matchingCount = filterProducts(products, { ...filters, q: query, category: "" }).filter((product) => {
+        return (!canonicalCategory || product.categoryId === canonicalCategory.id)
+          && (!subcategory || product.subcategoryId === subcategory.id)
+          && (!productType || product.productTypeId === productType.id)
+          && (!filterCategory || product.categoryId === filterCategory.id);
+      }).length;
+      void recordStorefrontEvent("SEARCH", { path: window.location.pathname, searchTerm: query, resultCount: matchingCount }).catch(() => undefined);
+    }
   };
 
   const clearFilters = () => setParams(new URLSearchParams());
@@ -111,9 +129,9 @@ export function CatalogueView({ categorySlug }: CatalogueViewProps) {
             className="mt-2 h-11 w-full rounded-md border border-[#E4E7EC] bg-white px-3 text-sm font-semibold"
           >
             <option value="">All categories</option>
-            {categories.map((item) => (
+            {taxonomy.filter((item) => products.some((product) => product.categoryId === item.id)).map((item) => (
               <option key={item.slug} value={item.slug}>
-                {item.name}
+                {item.label}
               </option>
             ))}
           </select>
@@ -229,7 +247,7 @@ export function CatalogueView({ categorySlug }: CatalogueViewProps) {
               {category ? "Category" : "Shop"}
             </p>
             <h1 className="mt-3 text-4xl font-black text-[#0A0A0A] sm:text-5xl">
-              {category?.name ?? "Shop Technology"}
+              {productType?.label ?? subcategory?.label ?? category?.label ?? "Shop Technology"}
             </h1>
             <p className="mt-4 max-w-2xl text-base leading-7 text-[#3F4652]">
               {category?.description ??
@@ -265,25 +283,28 @@ export function CatalogueView({ categorySlug }: CatalogueViewProps) {
         </div>
         </div>
 
-        {category?.subcategories.length ? (
+        {canonicalCategory?.children.length ? (
           <div className="mt-6 flex flex-wrap gap-2">
-            {category.subcategories.map((subcategory) => (
-              <span
-                key={subcategory}
+            {canonicalCategory.children.map((item) => (
+              <Link
+                key={item.id}
+                to={`/shop/${canonicalCategory.slug}/${item.slug}`}
                 className="rounded-full border border-[#E4E7EC] bg-white px-3 py-1.5 text-sm font-bold text-[#3F4652]"
               >
-                {subcategory}
-              </span>
+                {item.label}
+              </Link>
             ))}
           </div>
         ) : null}
+
+        {subcategory?.productTypes?.length ? <div className="mt-3 flex flex-wrap gap-2">{subcategory.productTypes.map((item) => <Link key={item.id} to={`/shop/${canonicalCategory!.slug}/${subcategory.slug}/${item.slug}`} className="rounded-full border border-[#B7DED5] bg-[#F2F9F7] px-3 py-1.5 text-sm font-bold text-[#176B5C]">{item.label}</Link>)}</div> : null}
 
         {category && (
           <Link
             to={`/zeus?context=${category.slug}`}
             className="mt-6 inline-flex items-center gap-2 rounded-lg border border-[rgba(70,157,139,0.35)] bg-[var(--tek-accent)] px-4 py-3 text-sm font-black text-[var(--tek-accent-ink)] shadow-[0_16px_40px_rgba(10,10,10,0.12)] transition hover:bg-[var(--tek-accent-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--tek-accent)]"
           >
-            Ask Zeus to help plan {category.name.toLowerCase()}
+            Ask Zeus to help plan {category.label.toLowerCase()}
             <FiArrowRight aria-hidden="true" />
           </Link>
         )}

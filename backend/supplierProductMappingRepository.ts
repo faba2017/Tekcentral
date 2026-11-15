@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { SupplierCode, SupplierProductMapping } from "./types.js";
+import { loadPersistenceConfig } from "./persistence/config.js";
+import { readRows, replaceMappings } from "./persistence/catalogueRepository.js";
 
 interface SupplierProductMappingStore {
   version: 1;
@@ -41,6 +43,7 @@ function createLocalId(prefix: string) {
 }
 
 async function readStore(): Promise<SupplierProductMappingStore> {
+  if (loadPersistenceConfig().provider === "POSTGRES") return { version: 1, mappings: await readRows<SupplierProductMapping>("catalogue_product_mappings", "updated_at, id") };
   try {
     const raw = await readFile(getStorePath(), "utf8");
     const parsed = JSON.parse(raw) as Partial<SupplierProductMappingStore>;
@@ -54,6 +57,7 @@ async function readStore(): Promise<SupplierProductMappingStore> {
 }
 
 async function writeStore(store: SupplierProductMappingStore) {
+  if (loadPersistenceConfig().provider === "POSTGRES") { await replaceMappings(store.mappings); return; }
   const storePath = getStorePath();
   await mkdir(dirname(storePath), { recursive: true });
   await writeFile(storePath, JSON.stringify(store, null, 2));
@@ -100,6 +104,9 @@ export async function saveSupplierProductMapping(input: {
   verifiedBy?: string;
   verifiedAt?: string;
   source?: string;
+  reviewHistory?: SupplierProductMapping["reviewHistory"];
+  supersededAt?: string;
+  supersededByMappingId?: string;
 }) {
   const supplierSku = input.supplierSku.trim();
   if (!supplierSku) throw new Error("SUPPLIER_MAPPING_REQUIRED");
@@ -140,6 +147,9 @@ export async function saveSupplierProductMapping(input: {
       (input.status === "SUGGESTED" ? undefined : existing?.verifiedAt) ??
       (input.status === "VERIFIED" ? now : undefined),
     source: input.source?.trim() || "Staff supplied",
+    reviewHistory: input.reviewHistory ?? existing?.reviewHistory,
+    supersededAt: input.supersededAt ?? existing?.supersededAt,
+    supersededByMappingId: input.supersededByMappingId ?? existing?.supersededByMappingId,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -151,15 +161,28 @@ export async function saveSupplierProductMapping(input: {
 
 export async function setSupplierProductMappingStatus(
   id: string,
-  status: "VERIFIED" | "REJECTED",
+  status: "VERIFIED" | "REVIEW_REQUIRED" | "SUPERSEDED" | "REJECTED",
+  review?: { actor?: string; evidence?: string },
 ) {
   const mapping = await getSupplierProductMappingById(id);
   if (!mapping) return undefined;
   return saveSupplierProductMapping({
     ...mapping,
     status,
-    verifiedBy: status === "VERIFIED" ? "TekCentral Staff" : mapping.verifiedBy,
+    verifiedBy: status === "VERIFIED" ? review?.actor ?? "TekCentral Staff" : mapping.verifiedBy,
     verifiedAt: status === "VERIFIED" ? new Date().toISOString() : mapping.verifiedAt,
     source: mapping.source ?? "Staff reviewed",
+    reviewHistory: review?.evidence ? [...(mapping.reviewHistory ?? []), { previousStatus: mapping.status, newStatus: status, actor: review.actor ?? "TekCentral Staff", evidence: review.evidence.trim(), timestamp: new Date().toISOString() }] : mapping.reviewHistory,
   });
+}
+
+export async function supersedeSupplierProductMapping(input: { previousMappingId: string; replacement: Parameters<typeof saveSupplierProductMapping>[0]; actor?: string; evidence: string }) {
+  if (!input.evidence.trim()) throw new Error("Mapping replacement requires evidence.");
+  const previous = await getSupplierProductMappingById(input.previousMappingId);
+  if (!previous) throw new Error("Previous mapping not found.");
+  const replacement = await saveSupplierProductMapping(input.replacement);
+  if (replacement.id === previous.id) return { previous, replacement };
+  const now = new Date().toISOString();
+  const superseded = await saveSupplierProductMapping({ ...previous, status: "SUPERSEDED", supersededAt: now, supersededByMappingId: replacement.id, reviewHistory: [...(previous.reviewHistory ?? []), { previousStatus: previous.status, newStatus: "SUPERSEDED", actor: input.actor ?? "TekCentral Staff", evidence: input.evidence.trim(), timestamp: now }] });
+  return { previous: superseded, replacement };
 }

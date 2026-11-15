@@ -1,26 +1,38 @@
 import type { Product } from "../../../src/types/product.js";
 import { categories } from "../../../src/data/catalogue.js";
-import { getAdminProductById, listAdminProducts, saveInternalProduct } from "../../internalProductRepository.js";
+import { getAdminProductById, getInternalProduct, getProductCreatedFromOffer, listAdminProducts, saveInternalProduct } from "../../internalProductRepository.js";
 import { listSupplierProductMappings, saveSupplierProductMapping } from "../../supplierProductMappingRepository.js";
 import { getScoopCatalogueProduct } from "./scoopCatalogueRepository.js";
 import type { ScoopCatalogueProduct } from "./scoopTypes.js";
+import { suggestCanonicalCategory } from "../../categorySuggestionService.js";
+import { canonicalTaxonomyCategory, canonicalTaxonomyPath, getCanonicalTaxonomyTree, resolveCanonicalTaxonomy } from "../../canonicalTaxonomyService.js";
 
 export type MappingConfidenceLevel = "HIGH" | "MEDIUM" | "LOW";
 const genericTerms = new Set(["network", "wireless", "bracket", "switch", "device", "product", "system"]);
 const categoryRules = [
-  { slug: "networking", terms: ["access point", "router", "network", "switch", "ethernet", "wifi", "wi-fi", "poe", "fibre"] },
-  { slug: "security", terms: ["camera", "cctv", "nvr", "security", "access control"] },
-  { slug: "power", terms: ["ups", "inverter", "surge", "power supply"] },
-  { slug: "printing-office", terms: ["printer", "scanner", "projector", "pos"] },
+  { slug: "office-business-technology", terms: ["ip phone", "conference phone", "voip", " ata ", "printer", "scanner", "projector", "pos"] },
+  { slug: "cables-connectivity", terms: ["ethernet cable", "network cable", "fibre", "fiber", "patch lead"] },
+  { slug: "networking", terms: ["access point", "router", "network", "switch", "wifi", "wi-fi", "poe"] },
+  { slug: "security-surveillance", terms: ["camera", "cctv", "nvr", "security", "access control"] },
+  { slug: "power-backup", terms: ["ups", "inverter", "surge", "power supply"] },
   { slug: "computers", terms: ["laptop", "desktop", "monitor", "dock", "mini pc"] },
-  { slug: "accessories", terms: ["cable", "adapter", "keyboard", "mouse", "headset", "webcam", "charger", "storage"] },
-  { slug: "smart-tech", terms: ["sensor", "iot", "automation", "smart"] },
+  { slug: "storage", terms: ["ssd", "hard drive", "storage", "nas"] },
+  { slug: "peripherals-accessories", terms: ["adapter", "keyboard", "mouse", "headset", "webcam", "dock"] },
+  { slug: "smart-home-lifestyle", terms: ["sensor", "iot", "automation", "smart"] },
 ];
 
 const normalize = (value: string) => value.toLowerCase().replace(/wi[ -]?fi/g, "wifi").replace(/[^a-z0-9]+/g, " ").trim();
 const tokens = (value: string) => [...new Set(normalize(value).split(" ").filter((token) => token.length > 2 && !genericTerms.has(token)))];
 const titleCaseWifi = (value: string) => value.replace(/\bwi[ -]?fi\b/gi, "Wi-Fi").replace(/\s+/g, " ").trim();
 const slugify = (value: string) => normalize(value).replace(/\s+/g, "-");
+const exactIdentity = (value?: string) => normalize(value ?? "").replace(/\s+/g, "");
+
+export function exactScoopProductIdentityMatches(offer: ScoopCatalogueProduct, product: Pick<Product, "sku" | "brand" | "model"> & { provenance?: { sourceSupplierOfferId?: string; sourceSupplierSku?: string } }) {
+  const offerSku = exactIdentity(offer.supplierSku);
+  const manufacturer = exactIdentity(offer.manufacturer);
+  if (product.provenance?.sourceSupplierOfferId === `SCOOP:${offer.supplierSku}` || exactIdentity(product.provenance?.sourceSupplierSku) === offerSku) return true;
+  return Boolean(manufacturer && exactIdentity(product.brand) === manufacturer && [product.model, product.sku].some((value) => exactIdentity(value) === offerSku));
+}
 
 export function scoreScoopProductMatch(offer: ScoopCatalogueProduct, product: Pick<Product, "sku" | "name" | "brand" | "model" | "category">) {
   const offerText = normalize(`${offer.description} ${offer.supplierSku}`);
@@ -39,11 +51,11 @@ export function scoreScoopProductMatch(offer: ScoopCatalogueProduct, product: Pi
 export function suggestScoopCategory(offer: ScoopCatalogueProduct) {
   const text = normalize(`${offer.description} ${offer.manufacturer ?? ""}`);
   const rule = categoryRules.find((candidate) => candidate.terms.some((term) => text.includes(normalize(term))));
-  return categories.find((category) => category.slug === rule?.slug) ?? categories.find((category) => category.slug === "accessories")!;
+  return categories.find((category) => category.slug === rule?.slug) ?? categories.find((category) => category.slug === "peripherals-accessories")!;
 }
 
 export function suggestScoopProductTitles(offer: ScoopCatalogueProduct) {
-  const manufacturer = titleCaseWifi(offer.manufacturer?.trim() ?? "");
+  const manufacturer = /^(locally sourced|generic)$/i.test(offer.manufacturer?.trim() ?? "") ? "" : titleCaseWifi(offer.manufacturer?.trim() ?? "");
   const source = titleCaseWifi(offer.description).replace(new RegExp(`^${manufacturer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+`, "i"), "").trim();
   const full = [manufacturer, source].filter(Boolean).join(" ");
   const shortSource = source.replace(/\bUISP\b/gi, "").replace(/\bWi-Fi\b/gi, "").replace(/\s+/g, " ").trim();
@@ -52,21 +64,38 @@ export function suggestScoopProductTitles(offer: ScoopCatalogueProduct) {
 
 export async function getScoopProductCreationPreview(supplierSku: string) {
   const offer = await getScoopCatalogueProduct(supplierSku); if (!offer) return undefined;
-  const category = suggestScoopCategory(offer);
-  const matches = (await listAdminProducts()).map((product) => ({ product: { id: product.id, name: product.name, sku: product.sku, brand: product.brand, model: product.model, category: product.category }, ...scoreScoopProductMatch(offer, product) })).sort((a, b) => b.confidence - a.confidence).slice(0, 12);
-  return { offer, titleSuggestions: suggestScoopProductTitles(offer), categorySuggestion: { slug: category.slug, name: category.name, subcategories: category.subcategories }, categories: categories.map(({ slug, name, subcategories }) => ({ slug, name, subcategories })), matches };
+  const canonicalSuggestion = await suggestCanonicalCategory({ supplierId: "SCOOP", sourceCategoryLabel: offer.description, productName: offer.description, supplierSku: offer.supplierSku, brand: offer.manufacturer });
+  const canonicalPath = await canonicalTaxonomyPath({categoryId:canonicalSuggestion.suggestedCategoryId,subcategoryId:canonicalSuggestion.suggestedSubcategoryId,productTypeId:canonicalSuggestion.suggestedProductTypeId}); const canonicalCategory = canonicalPath.category;
+  const legacyCategory = suggestScoopCategory(offer);
+  const suggestedSubcategory = canonicalPath.subcategory?.name;
+  const products = await listAdminProducts();
+  const matches = products.map((product) => ({ product: { id: product.id, name: product.name, sku: product.sku, brand: product.brand, model: product.model, category: product.category }, ...scoreScoopProductMatch(offer, product), exactIdentity: exactScoopProductIdentityMatches(offer, product) })).sort((a, b) => Number(b.exactIdentity) - Number(a.exactIdentity) || b.confidence - a.confidence).slice(0, 12);
+  const categories=await getCanonicalTaxonomyTree(); const selectedTree=categories.find((item)=>item.id===canonicalCategory?.id); return { offer, titleSuggestions: suggestScoopProductTitles(offer), categorySuggestion: { slug: canonicalCategory?.slug ?? legacyCategory.slug, name: canonicalCategory?.name ?? legacyCategory.name, subcategories: selectedTree?.children.map((item) => item.name) ?? legacyCategory.subcategories, suggestedSubcategory, confidence: canonicalSuggestion.confidence, evidence: canonicalSuggestion.evidence, source: canonicalSuggestion.source }, categories: categories.map(({ slug, name, children }) => ({ slug, name, subcategories:children.map((item)=>item.name) })), matches };
 }
 
 export async function createTekCentralProductFromScoop(input: { supplierSku: string; name: string; categorySlug: string; subcategory?: string; confirmed: boolean }) {
   if (!input.confirmed) throw new Error("PRODUCT_CREATION_CONFIRMATION_REQUIRED");
   const offer = await getScoopCatalogueProduct(input.supplierSku); if (!offer) throw new Error("SCOOP_PRODUCT_NOT_FOUND");
-  if ((await listSupplierProductMappings()).some((mapping) => mapping.supplierCode === "SCOOP" && mapping.supplierSku === offer.supplierSku && mapping.status === "VERIFIED")) throw new Error("SCOOP_OFFER_ALREADY_VERIFIED");
+  const existingMapping = (await listSupplierProductMappings()).find((mapping) => mapping.supplierCode === "SCOOP" && mapping.supplierSku === offer.supplierSku && mapping.status === "VERIFIED");
+  if (existingMapping) {
+    const existingProduct = await getInternalProduct(existingMapping.productId);
+    if (!existingProduct) throw new Error("SCOOP_OFFER_ALREADY_VERIFIED");
+    return { product: existingProduct, mapping: existingMapping, reused: true as const };
+  }
+  const productFromOffer = await getProductCreatedFromOffer(`SCOOP:${offer.supplierSku}`);
+  if (productFromOffer) {
+    const now = new Date().toISOString();
+    const mapping = await saveSupplierProductMapping({ productId: productFromOffer.id, supplierCode: "SCOOP", supplierSku: offer.supplierSku, supplierOfferId: `SCOOP:${offer.supplierSku}`, supplierProductId: offer.supplierSku, supplierProductSku: offer.supplierSku, status: "VERIFIED", confidence: 1, confidenceLevel: "HIGH", matchMethod: "EXACT_SOURCE_OFFER_IDENTITY", evidence: ["Existing TekCentral product was created from this exact Scoop SupplierOffer", `Scoop SKU ${offer.supplierSku}`], verifiedBy: "TekCentral Staff", verifiedAt: now, source: "SCOOP_PRODUCT_CREATION" });
+    return { product: productFromOffer, mapping, reused: true as const };
+  }
   const name = titleCaseWifi(input.name); if (!name || /tekcentral/i.test(name)) throw new Error("INVALID_PRODUCT_NAME");
-  const category = categories.find((item) => item.slug === input.categorySlug); if (!category) throw new Error("CATEGORY_CONFIRMATION_REQUIRED");
-  if (input.subcategory && !category.subcategories.includes(input.subcategory)) throw new Error("INVALID_SUBCATEGORY");
+  const category = await canonicalTaxonomyCategory(input.categorySlug); if (!category) throw new Error("CATEGORY_CONFIRMATION_REQUIRED");
+  const subcategoryNode = input.subcategory?category.children.find((item)=>item.id===input.subcategory||item.slug===input.subcategory||item.name.toLowerCase()===input.subcategory?.toLowerCase()):undefined; const subcategory=subcategoryNode?.name;
+  if (input.subcategory && !subcategory) throw new Error("INVALID_SUBCATEGORY");
   const manufacturer = offer.manufacturer?.trim() || "Manufacturer pending review";
   const now = new Date().toISOString();
-  const product = await saveInternalProduct({ slug: slugify(name), sku: `TC-${offer.supplierSku.replace(/[^a-z0-9]/gi, "-").toUpperCase()}`, name, brand: manufacturer, category: category.name, categorySlug: category.slug, subcategory: input.subcategory, shortDescription: titleCaseWifi(offer.description), description: titleCaseWifi(offer.description), images: offer.imageUrl ? [offer.imageUrl] : [], publicationStatus: "INTERNAL_DRAFT", provenance: { createdFromSupplierOffer: true, sourceSupplier: "SCOOP", sourceSupplierOfferId: `SCOOP:${offer.supplierSku}`, sourceSupplierSku: offer.supplierSku, sourceDescription: offer.description, manufacturer: offer.manufacturer, sourceImage: offer.imageUrl ? { source: "SCOOP", originalUrl: offer.imageUrl, capturedAt: now } : undefined } });
+  const taxonomy = await resolveCanonicalTaxonomy({ name, sku: offer.supplierSku, categoryId:category.id,subcategoryId:subcategoryNode?.id,taxonomyVersion:1,taxonomyStatus:"VERIFIED" });
+  const product = await saveInternalProduct({ slug: slugify(name), sku: `TC-${offer.supplierSku.replace(/[^a-z0-9]/gi, "-").toUpperCase()}`, name, brand: manufacturer, model: offer.logisticsMetadata?.model ?? offer.supplierSku, category: category.name, categorySlug: category.slug, subcategory: input.subcategory, ...taxonomy, shortDescription: titleCaseWifi(offer.description), description: titleCaseWifi(offer.description), images: offer.imageUrl ? [offer.imageUrl] : [], publicationStatus: "INTERNAL_DRAFT", provenance: { createdFromSupplierOffer: true, sourceSupplier: "SCOOP", sourceSupplierOfferId: `SCOOP:${offer.supplierSku}`, sourceSupplierSku: offer.supplierSku, sourceDescription: offer.description, sourceCategory: { supplierId: "SCOOP", sourceCategoryLabel: offer.description }, manufacturer: offer.manufacturer, sourceImage: offer.imageUrl ? { source: "SCOOP", originalUrl: offer.imageUrl, capturedAt: now } : undefined } });
   const mapping = await saveSupplierProductMapping({ productId: product.id, supplierCode: "SCOOP", supplierSku: offer.supplierSku, supplierOfferId: `SCOOP:${offer.supplierSku}`, supplierProductId: offer.supplierSku, supplierProductSku: offer.supplierSku, status: "VERIFIED", confidence: 1, confidenceLevel: "HIGH", matchMethod: "STAFF_CONFIRMED_PRODUCT_CREATION", evidence: ["Created from exact Scoop SupplierOffer", `Scoop SKU ${offer.supplierSku}`, offer.manufacturer ? `Manufacturer ${offer.manufacturer}` : "Manufacturer pending review"], verifiedBy: "TekCentral Staff", verifiedAt: now, source: "SCOOP_PRODUCT_CREATION" });
   return { product, mapping };
 }

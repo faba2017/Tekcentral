@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { AdminFeedback, AdminPageHeader, AdminShell } from "@/components/admin/AdminShell";
+import { AdminFeedback } from "@/components/admin/AdminShell";
+import { SettingsWorkspace } from "@/components/admin/SettingsWorkspace";
 import { ApiError, apiRequest } from "@/lib/api";
 import { normalizeAdminShippingSettings, type SettingsAuditEntry, type ShippingSettings } from "@/lib/admin";
 import { formatDateTime } from "@/lib/order-utils";
@@ -25,14 +26,15 @@ export function AdminShippingSettingsPage() {
   const [settings, setSettings] = useState<ShippingSettings>();
   const [saved, setSaved] = useState<ShippingSettings>();
   const [audit, setAudit] = useState<SettingsAuditEntry[]>([]);
+  const [revision, setRevision] = useState(0);
   const [feedback, setFeedback] = useState<{ variant: "success" | "error"; message: string }>();
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [testInput, setTestInput] = useState({ supplierSku: "ACB-ISP", quantity: 1, postalCode: "7460", city: "Cape Town", province: "Western Cape" });
   const [testResult, setTestResult] = useState<ShippingTestResult>();
   const [testing, setTesting] = useState(false);
-  const fetchSettings = useCallback(() => apiRequest<{ shipping: Partial<ShippingSettings>; audit: SettingsAuditEntry[] }>("/api/admin/settings/shipping")
-      .then((response) => { const normalized = normalizeAdminShippingSettings(response.shipping ?? {}); setSettings(normalized); setSaved(normalized); setAudit(Array.isArray(response.audit) ? response.audit : []); })
+  const fetchSettings = useCallback(() => apiRequest<{ shipping: Partial<ShippingSettings>; audit: SettingsAuditEntry[]; revision: number }>("/api/admin/settings/shipping")
+      .then((response) => { const normalized = normalizeAdminShippingSettings(response.shipping ?? {}); setSettings(normalized); setSaved(normalized); setRevision(response.revision); setAudit(Array.isArray(response.audit) ? response.audit : []); })
       .catch(() => { setLoadFailed(true); setFeedback({ variant: "error", message: "Shipping settings could not be loaded." }); })
       .finally(() => setLoading(false)), []);
   const retryLoad = () => { setLoading(true); setLoadFailed(false); setFeedback(undefined); void fetchSettings(); };
@@ -40,9 +42,9 @@ export function AdminShippingSettingsPage() {
   const save = async () => {
     if (!settings) return;
     try {
-      const response = await apiRequest<{ shipping: ShippingSettings; audit: SettingsAuditEntry[] }>("/api/admin/settings/shipping", { method: "PATCH", body: JSON.stringify({ shipping: settings }) });
+      const response = await apiRequest<{ shipping: ShippingSettings; audit: SettingsAuditEntry[]; revision: number }>("/api/admin/settings/shipping", { method: "PATCH", body: JSON.stringify({ shipping: settings, revision, confirmHighRisk: true }) });
       const normalized = normalizeAdminShippingSettings(response.shipping);
-      setSettings(normalized); setSaved(normalized); setAudit(response.audit);
+      setSettings(normalized); setSaved(normalized); setRevision(response.revision); setAudit(response.audit);
       setFeedback({ variant: "success", message: `Shipping policy saved as rate-card version ${normalized.localRateCard.version}. Existing orders were not changed.` });
     } catch (error) { setFeedback({ variant: "error", message: error instanceof ApiError ? error.message : "Shipping settings could not be saved." }); }
   };
@@ -56,8 +58,8 @@ export function AdminShippingSettingsPage() {
     catch (error) { setFeedback({ variant: "error", message: error instanceof ApiError ? error.message : "Delivery estimate test failed." }); }
     finally { setTesting(false); }
   };
-  return <AdminShell>
-    <AdminPageHeader eyebrow="Business settings" title="Shipping" description="Configure estimated customer delivery separately from product pricing and actual supplier freight." actions={<button type="button" onClick={save} disabled={!settings || JSON.stringify(settings) === JSON.stringify(saved)} className="rounded-md bg-[var(--tek-accent)] px-4 py-2 text-sm font-black text-[var(--tek-accent-ink)] disabled:bg-[#E4E7EC] disabled:text-[#727986]">Save settings</button>} />
+  return <SettingsWorkspace title="Shipping & Fulfilment" description="Configure estimated customer delivery separately from product pricing and actual supplier freight.">
+    <div className="flex justify-end"><button type="button" onClick={() => { if (window.confirm("Confirm shipping policy changes that may affect checkout delivery quotes?")) void save(); }} disabled={!settings || JSON.stringify(settings) === JSON.stringify(saved)} className="rounded-md bg-[var(--tek-accent)] px-4 py-2 text-sm font-black text-[var(--tek-accent-ink)] disabled:bg-[#E4E7EC] disabled:text-[#727986]">Save changes</button></div>
     {feedback && <div className="mt-5"><AdminFeedback {...feedback} /></div>}
     {loading && <section aria-live="polite" className="mt-6 rounded-lg border border-[#E4E7EC] bg-white p-5 shadow-sm"><p className="text-sm font-black text-[#3F4652]">Loading shipping settings...</p></section>}
     {!loading && loadFailed && <section className="mt-6 rounded-lg border border-[#E4E7EC] bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-[#3F4652]">The shipping settings service did not respond.</p><button type="button" onClick={retryLoad} className="mt-4 rounded-md bg-[var(--tek-accent)] px-4 py-2 text-sm font-black text-[var(--tek-accent-ink)]">Retry</button></section>}
@@ -94,5 +96,5 @@ export function AdminShippingSettingsPage() {
       <section className="mt-6 rounded-lg border border-[#E4E7EC] bg-white p-5 shadow-sm"><h2 className="text-lg font-black">Delivery estimate tester</h2><p className="mt-2 text-sm font-semibold text-[#727986]">Admin-only diagnostic using the currently saved shipping policy and rate card.</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5"><label className="text-xs font-black">Scoop SKU<input value={testInput.supplierSku} onChange={(event) => setTestInput({ ...testInput, supplierSku: event.target.value })} className={inputClass} /></label><label className="text-xs font-black">Quantity<input type="number" min="1" value={testInput.quantity} onChange={(event) => setTestInput({ ...testInput, quantity: Number(event.target.value) })} className={inputClass} /></label><label className="text-xs font-black">Postcode<input value={testInput.postalCode} onChange={(event) => setTestInput({ ...testInput, postalCode: event.target.value })} className={inputClass} /></label><label className="text-xs font-black">City<input value={testInput.city} onChange={(event) => setTestInput({ ...testInput, city: event.target.value })} className={inputClass} /></label><label className="text-xs font-black">Province<input value={testInput.province} onChange={(event) => setTestInput({ ...testInput, province: event.target.value })} className={inputClass} /></label></div><button type="button" onClick={() => void runTest()} disabled={testing} className="mt-4 rounded-md bg-[var(--tek-accent)] px-4 py-2 text-sm font-black text-[var(--tek-accent-ink)] disabled:opacity-60">{testing ? "Testing..." : "Test delivery estimate"}</button>{testResult && <div className="mt-4 rounded-md border border-[#E4E7EC] bg-[#F6F7F9] p-4 text-sm"><p className="font-black">{testResult.success ? "Quote ready" : `Blocked: ${testResult.blocker ?? "CALCULATION_ERROR"}`}</p>{testResult.success && <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4"><p>Policy: <strong>{testResult.policy}</strong></p><p>Zone: <strong>{testResult.zoneId}</strong></p><p>Matched by: <strong>{testResult.matchedBy}</strong></p><p>Actual: <strong>{testResult.actualWeightKg} kg</strong></p><p>Volumetric: <strong>{testResult.volumetricWeightKg} kg</strong></p><p>Billable: <strong>{testResult.billableWeightKg} kg</strong></p><p>Base: <strong>R {testResult.baseCharge?.toFixed(2)}</strong></p><p>Additional: <strong>R {testResult.additionalWeightCharge?.toFixed(2)}</strong></p><p>Operational buffer: <strong>R {testResult.operationalBuffer?.toFixed(2)}</strong></p><p>Fixed buffer: <strong>R {testResult.fixedBuffer?.toFixed(2)}</strong></p><p>Customer charge: <strong>R {testResult.customerCharge?.toFixed(2)}</strong></p><p>Transit: <strong>{testResult.transitDaysMin}-{testResult.transitDaysMax} business days</strong></p><p>Rate-card version: <strong>{testResult.rateCardVersion}</strong></p></div>}</div>}</section>
     </>}
     <section className="mt-6 rounded-lg border border-[#E4E7EC] bg-white p-5 shadow-sm"><h2 className="text-lg font-black">Shipping settings history</h2><div className="mt-3 divide-y divide-[#E4E7EC]">{audit.filter((entry) => entry.setting.startsWith("shipping.")).slice(0, 30).map((entry) => <div key={entry.id} className="grid gap-2 py-3 text-sm md:grid-cols-[1fr_180px_180px]"><span className="font-black">{entry.setting}</span><span className="font-semibold text-[#727986]">{entry.actor}</span><span className="font-semibold text-[#727986]">{formatDateTime(entry.timestamp)}</span></div>)}</div></section>
-  </AdminShell>;
+  </SettingsWorkspace>;
 }

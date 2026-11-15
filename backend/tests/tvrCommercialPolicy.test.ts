@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import { normalizeTvrComplianceFlags, tvrAvailabilityFromStock, tvrSupplierCostExVat, tvrTaxBasisForSourceField } from "../suppliers/tvr/tvrCommercialPolicy.js";
+import { tvrPricingInput } from "../supplierPricing.js";
+import { tvrAvailabilityEvidence } from "../productAvailabilityService.js";
+import type { TvrNormalizedOffer } from "../suppliers/tvr/tvrOfferNormalization.js";
+import { readFile } from "node:fs/promises";
+
+assert.equal(tvrTaxBasisForSourceField("Price Excl"), "EXCLUSIVE");
+assert.equal(tvrTaxBasisForSourceField("Price"), "INCLUSIVE");
+assert.equal(tvrTaxBasisForSourceField("Refurb Price"), "INCLUSIVE");
+assert.equal(tvrTaxBasisForSourceField("Dealer Price"), "UNKNOWN");
+assert.equal(tvrSupplierCostExVat({ amount: 115, taxBasis: "INCLUSIVE", vatRatePercent: 15 }), 100);
+assert.equal(tvrPricingInput({ supplierOfferId: "TVR:NEW:X", sourceCost: 115, taxBasis: "INCLUSIVE", vatRatePercent: 15, pricingTimestamp: "2026-11-09T00:00:00.000Z" }).supplierCostExVat, 100);
+assert.equal(tvrAvailabilityFromStock(["AVAILABLE"]), "AVAILABLE");
+assert.equal(tvrAvailabilityFromStock(["LOW_STOCK"]), "LOW_STOCK");
+assert.equal(tvrAvailabilityFromStock(["OUT_OF_STOCK"]), "OUT_OF_STOCK");
+assert.equal(tvrAvailabilityFromStock(["AVAILABLE", "LOW_STOCK"]), "UNKNOWN");
+assert.deepEqual(normalizeTvrComplianceFlags({ flags: ["DEALER_TV_LICENCE_REQUIRED"], sectionContexts: ["Telefunken TV's"] }), ["CUSTOMER_TV_LICENCE_REQUIRED"]);
+assert.deepEqual(normalizeTvrComplianceFlags({ flags: ["DEALER_TV_LICENCE_REQUIRED"], sectionContexts: ["Adata"] }), []);
+const offer = { lifecycleStatus: "CURRENT", classification: "SAFE", availability: "LOW_STOCK", observedAt: "2026-11-09T00:00:00.000Z" } as TvrNormalizedOffer;
+assert.deepEqual(tvrAvailabilityEvidence(offer, true, 24), { state: "LOW_STOCK", observedAt: offer.observedAt, freshnessHours: 24, source: "TVR_COMMERCIAL_WORKBOOK" });
+assert.equal(tvrAvailabilityEvidence({ ...offer, classification: "CONFLICT" }, true, 24), undefined);
+assert.equal(tvrAvailabilityEvidence(offer, false, 24), undefined);
+const serverSource = await readFile("backend/server.ts", "utf8");
+const pricingApprovalRoute = serverSource.slice(serverSource.indexOf("if (request.method === \"PATCH\" && url.pathname.match(/^\\/api\\/admin\\/pricing"), serverSource.indexOf("if (request.method === \"PATCH\" && url.pathname.match(/^\\/api\\/admin\\/pricing") + 2600);
+assert.match(pricingApprovalRoute, /currentStaff\(request\)/);
+assert.match(pricingApprovalRoute, /staffAuditActor\(staff!\.context\)/);
+assert.doesNotMatch(pricingApprovalRoute, /body\.actor/);
+
+console.log("TVR commercial policy tests passed.");

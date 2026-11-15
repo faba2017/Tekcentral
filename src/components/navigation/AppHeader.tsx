@@ -8,9 +8,10 @@ import {
   FiUser,
   FiX,
 } from "react-icons/fi";
-import { categories } from "@/data/catalogue";
 import { useCart } from "@/state/cart";
 import { cn } from "@/lib/utils";
+import { useCustomerAuth } from "@/state/customer-auth";
+import { useStorefrontCatalogue } from "@/state/catalogue";
 
 interface CategoryNavItem {
   label: string;
@@ -18,21 +19,15 @@ interface CategoryNavItem {
   futureMegaMenu?: boolean;
 }
 
-const categoryNavItems: CategoryNavItem[] = [
-  { label: "Shop All", path: "/shop", futureMegaMenu: true },
-  ...categories.map((category) => ({
-    label: category.name,
-    path: `/category/${category.slug}`,
-  })),
-  { label: "Business Solutions", path: "/business" },
-  { label: "Ask Zeus", path: "/zeus" },
-];
-
 export function AppHeader() {
+  const { customer, state: customerAuthState } = useCustomerAuth();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
   const { itemCount } = useCart();
+  const { products, taxonomy } = useStorefrontCatalogue();
+  const populatedCategoryIds = new Set(products.map((product) => product.categoryId).filter(Boolean));
+  const categoryNavItems: CategoryNavItem[] = [{ label: "Shop All", path: "/shop", futureMegaMenu: true }, ...taxonomy.filter((category) => category.storefrontVisible && populatedCategoryIds.has(category.id)).map((category) => ({ label: category.name, path: `/shop/${category.slug}` })), { label: "Business Solutions", path: "/business" }, { label: "Ask Zeus", path: "/zeus" }];
 
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -121,14 +116,14 @@ export function AppHeader() {
             className="hidden h-11 items-center gap-2 rounded-md border border-[#E4E7EC] px-3 text-sm font-bold text-[#3F4652] transition hover:border-[#0A0A0A] hover:text-[#0A0A0A] sm:inline-flex"
           >
             <FiUser aria-hidden="true" />
-            Account
+            {customerAuthState === "authenticated" && customer ? customer.firstName : "Account"}
           </Link>
           <Link
             to="/cart"
             className="inline-flex h-11 items-center gap-2 rounded-md bg-[var(--tek-accent)] px-3 text-sm font-black text-[var(--tek-accent-ink)] transition hover:bg-[var(--tek-accent-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--tek-accent)] focus-visible:ring-offset-4"
           >
             <FiShoppingCart aria-hidden="true" />
-            <span>Cart</span>
+            <span className="hidden min-[430px]:inline">Cart</span>
             <span className="grid min-w-6 place-items-center rounded bg-white/[0.14] px-1.5 py-0.5 text-xs">
               {itemCount}
             </span>
@@ -138,10 +133,10 @@ export function AppHeader() {
 
       <nav
         data-app-header-category-nav
-        className="hidden border-t border-[#E4E7EC] bg-white min-[900px]:block"
+        className="block border-t border-[#E4E7EC] bg-white shadow-[0_1px_0_rgba(16,24,40,0.02)]"
         aria-label="Category navigation"
       >
-        <div className="mx-auto flex max-w-7xl items-center gap-1 overflow-x-auto px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex max-w-7xl items-center gap-1 overflow-x-auto px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:px-6 lg:px-8" tabIndex={0}>
           {categoryNavItems.map((item) => (
             <NavLink
               key={item.label}

@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { usePageTitle } from "@/lib/page-title";
+import { usePageMetadata } from "@/lib/page-metadata";
 
 interface PlaceholderPageProps {
   title: string;
@@ -14,7 +14,7 @@ export function PlaceholderPage({
   description,
   isNotFound = false,
 }: PlaceholderPageProps) {
-  usePageTitle(`${title} | TekCentral`);
+  usePageMetadata({ title: `${title} | TekCentral`, description, path: window.location.pathname, robots: isNotFound ? "noindex,nofollow" : "index,follow" });
 
   return (
     <section className="min-h-[70vh] bg-white px-4 py-20 sm:px-6 lg:px-8">

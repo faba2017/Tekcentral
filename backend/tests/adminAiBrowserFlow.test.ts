@@ -1,0 +1,64 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { buildAdminAiTimeline } from "../../src/lib/admin-ai-timeline.js";
+
+const client = await readFile("src/lib/admin-ai-chat.ts", "utf8");
+const timelineSource = await readFile("src/lib/admin-ai-timeline.ts", "utf8");
+const page = await readFile("src/pages/admin/AdminAiChatPage.tsx", "utf8");
+const app = await readFile("src/App.tsx", "utf8");
+const server = await readFile("backend/server.ts", "utf8");
+
+assert.match(app, /path="\/admin\/ai"/);
+assert.match(page, /location\.pathname === "\/admin\/ai\/"/);
+assert.match(page, /navigate\(`\/admin\/ai\$\{location\.search\}`/);
+assert.match(client, /validAdminAiConversationId/);
+assert.match(client, /createAdminAiConversation/);
+assert.match(client, /if \(value === undefined\) return \{ actions: \[\]/);
+assert.match(client, /Controlled action data could not be displayed safely/);
+assert.match(client, /One controlled action could not be displayed safely/);
+assert.match(timelineSource, /export function buildAdminAiTimeline/);
+assert.match(timelineSource, /const actionByTurn = new Map\(actions\.map\(\(action\) => \[action\.turnId, action\]\)\)/);
+assert.match(timelineSource, /return messages\.flatMap/);
+assert.match(page, /AdminAiChatErrorBoundary/);
+assert.match(page, /Loading Admin AI conversation/);
+assert.match(page, /setActionWarning\(result\.actionPayloadWarning \?\? ""\)/);
+assert.match(server, /actions: await listAdminAiActionCards\(owner, conversationId\)/);
+assert.match(server, /createAdminAiChatConversation/);
+assert.match(page, /setParams\(\{ conversation: targetConversationId \}\)/);
+assert.match(page, /setActions\(\[\]\)/);
+assert.match(page, /type OptimisticTurn/);
+assert.match(page, /data-optimistic-message/);
+assert.match(page, /AdminAiProcessingIndicator/);
+assert.match(page, /Admin AI is processing your request\./);
+assert.match(page, /sendLockRef\.current/);
+assert.match(page, /selectedIdRef\.current === targetConversationId/);
+assert.match(page, /setOptimisticTurn\(\(current\) => current\?\.requestKey === requestKey \? undefined : current\)/);
+assert.match(page, /aria-busy=\{busy\}/);
+assert.match(page, /motion-safe:animate-pulse/);
+assert.match(page, /Applying change…/);
+assert.match(page, /Cancelling action…/);
+assert.match(page, /action\.preview\.changes\.map/);
+assert.match(page, /action\.state === "FAILED"/);
+assert.match(page, /action\.state === "SUCCEEDED"/);
+assert.match(page, /const timeline = useMemo\(\(\) => buildAdminAiTimeline\(messages, actions\)/);
+assert.match(page, /timeline\.map\(\(item\) =>/);
+assert.match(page, /item\.kind === "action"/);
+assert.match(page, /data-admin-ai-action-id=\{action\.id\}/);
+assert.match(page, /data-admin-ai-turn-id=\{action\.turnId\}/);
+assert.match(page, /overflow-x-hidden overflow-y-auto/);
+assert.doesNotMatch(page, /actions\.map\(\(action\)/);
+assert.doesNotMatch(page, /actions\.length > 0/);
+assert.doesNotMatch(page, /window\.location\s*=/);
+
+const user = (id: string, turnId: string) => ({ id, turnId, role: "USER" as const });
+const assistant = (id: string, turnId: string) => ({ id, turnId, role: "ASSISTANT" as const });
+const action = (id: string, turnId: string, state: string) => ({ id, turnId, state });
+const order = (messages: Array<ReturnType<typeof user> | ReturnType<typeof assistant>>, actions: Array<ReturnType<typeof action>>) => buildAdminAiTimeline(messages, actions).map((item) => item.kind === "message" ? `message:${item.message.id}` : `action:${item.action.id}:${item.action.state}`);
+
+assert.deepEqual(order([user("u1", "turn-a"), assistant("a1", "turn-a")], [action("x1", "turn-a", "AWAITING_CONFIRMATION")]), ["message:u1", "message:a1", "action:x1:AWAITING_CONFIRMATION"]);
+assert.deepEqual(order([user("u1", "turn-a"), assistant("a1", "turn-a"), user("u2", "turn-b"), assistant("a2", "turn-b")], [action("x1", "turn-a", "CANCELLED"), action("x2", "turn-b", "AWAITING_CONFIRMATION")]), ["message:u1", "message:a1", "action:x1:CANCELLED", "message:u2", "message:a2", "action:x2:AWAITING_CONFIRMATION"]);
+assert.deepEqual(order([user("u1", "turn-a")], [action("x1", "turn-a", "AWAITING_CONFIRMATION")]), ["message:u1", "action:x1:AWAITING_CONFIRMATION"]);
+assert.deepEqual(order([user("u1", "turn-a"), assistant("a1", "turn-a")], []), ["message:u1", "message:a1"]);
+assert.deepEqual(order([user("u1", "turn-a"), assistant("a1", "turn-a")], [action("x1", "turn-a", "SUCCEEDED")]), ["message:u1", "message:a1", "action:x1:SUCCEEDED"]);
+
+console.log("Admin AI browser-flow contract tests passed.");
