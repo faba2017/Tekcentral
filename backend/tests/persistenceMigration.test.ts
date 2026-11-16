@@ -59,4 +59,9 @@ for (const field of ["order_confirmation_required_at", "invoice_required_at"]) a
 for (const index of ["commerce_orders_confirmation_recovery_idx", "commerce_orders_invoice_recovery_idx"]) assert.match(commerceRecoverySql, new RegExp(index));
 assert.equal(/DEFAULT\s+(now\(\)|CURRENT_TIMESTAMP)/i.test(commerceRecoverySql), false, "historical Orders must remain outside prospective recovery scope");
 assert.equal(/UPDATE\s+commerce_orders/i.test(commerceRecoverySql), false, "the migration must not backfill historical Orders");
+const logisticsSql = await readFile("backend/persistence/migrations/0017_product_manual_logistics_evidence.sql", "utf8");
+assert.match(logisticsSql, /CREATE TABLE IF NOT EXISTS product_manual_logistics_evidence/);
+for (const value of ["PRODUCT", "PACKAGE", "SHIPPING", "STAFF_MANUAL", "actor_staff_id", "evidence_fingerprint", "superseded_at"]) assert.match(logisticsSql, new RegExp(value));
+assert.match(logisticsSql, /product_manual_logistics_active_idx/);
+assert.equal(/UPDATE\s+catalogue_products/i.test(logisticsSql), false, "manual logistics migration must not backfill Products");
 console.log("Persistence migration tests passed.");

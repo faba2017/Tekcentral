@@ -195,13 +195,13 @@ export async function getPublicationReview(internalProductId: string) {
   const storedImage = storedImages.find((item) => item.sourceImageUrl === supplierSourceImageUrl) ?? storedImages[0] ?? await findIngestedPublicImage({ internalProductId, sourceUrl: supplierSourceImageUrl?.startsWith("https://") ? supplierSourceImageUrl : undefined });
   const sourceImageUrl = storedImage?.sourceImageUrl ?? supplierSourceImageUrl;
   const existingControlledUrl = defaults.images[0]?.startsWith("/api/public/assets/products/") ? defaults.images[0] : undefined;
-  const publicImageUrl = storedImage?.publicUrl ?? existingControlledUrl;
+  const publicImageUrl = existingControlledUrl ?? storedImage?.publicUrl;
   const savedDraft = store.drafts?.find((item) => item.internalProductId === internalProductId);
   const existingControlledGallery = (savedDraft?.snapshot.images ?? active?.snapshot.images ?? []).filter((image) => image.startsWith("/api/public/assets/products/"));
   const controlledGallery = normalizeProductImages([...existingControlledGallery, ...storedImages.map((item) => item.publicUrl)]);
   const draftSource = savedDraft?.snapshot
-    ? { ...savedDraft.snapshot, images: controlledGallery.length ? controlledGallery : savedDraft.snapshot.images }
-    : { ...defaults, images: controlledGallery.length ? controlledGallery : publicImageUrl ? [publicImageUrl] : defaults.images };
+    ? { ...savedDraft.snapshot, images: controlledGallery }
+    : { ...defaults, images: controlledGallery.length ? controlledGallery : publicImageUrl ? [publicImageUrl] : [] };
   const prepared = preparePublicationContentDefaults({ product: context.product, draft: draftSource, origins: savedDraft?.contentOrigins ?? active?.contentOrigins });
   const draftImages = normalizeProductImages(prepared.draft.images);
   const draft = { ...prepared.draft, images: draftImages, media: publicProductMedia(prepared.draft.name, draftImages, prepared.draft.media), price: approvedPrice ?? prepared.draft.price };
@@ -233,7 +233,7 @@ export async function getPublicationReview(internalProductId: string) {
     readinessStatus: context.readiness.status,
     readinessBlockers: context.readiness.blockers,
     hasApprovedPrice: context.proposal?.status === "APPROVED" && context.proposal.proposedSellingPriceInclVat !== undefined,
-    publicImageUrl,
+    publicImageUrl: draft.images[0]?.startsWith("/api/public/assets/products/") ? draft.images[0] : publicImageUrl,
     contentStatus,
     minimumContentState: productPolicy.minimumContentState,
   });

@@ -131,6 +131,8 @@ try {
   assert.equal(publishedReview.versions[0].id, published.id);
   assert.deepEqual(publishedReview.versions[0].snapshot.images, savedReview.draft.images);
   const publicProduct = (await listPublicProducts()).find((item) => item.id === created.product.id)!;
+  assert.deepEqual(publicProduct.images, savedReview.draft.images);
+  assert.equal(publicProduct.images.length, 3);
   assert.equal(publicProduct.images.every((image) => image.startsWith("/api/public/assets/products/")), true);
   const publicPayload = JSON.stringify(publicProduct);
   for (const privateField of ["supplier", "sourceImageUrl", "provenance", "example.test"]) assert.equal(publicPayload.includes(privateField), false);

@@ -102,6 +102,21 @@ All configured Product sources cross the same canonical boundary after mapping. 
 
 Canonical action labels are stable across supplier tables and the drawer: `Match or create Product`, `Complete taxonomy`, `Complete content`, `Add public image`, `Complete logistics`, `Review commercial evidence`, `Review pricing`, `Select for launch`, `Review preview`, `Review & publish`, `View storefront` and `Create new version`. Explanatory blocker copy remains separate from the concise action label.
 
+### Supplier-neutral manual logistics evidence
+
+Step 7 resolves logistics server-side from supplier-backed evidence plus the latest active staff revision. Supplier evidence is preferred for fields it supplies; staff may persist only missing or deliberately corrected fields. Staff values are never silently replaced by later source refreshes. Canonical units are grams and millimetres. Physical Product completion requires positive weight, length, width and height. Measurements are classified as `PRODUCT`, `PACKAGE` or `SHIPPING`.
+
+Manual evidence is immutable by revision. A new save supersedes the previous active revision, identical normalized saves are no-ops, and optimistic revision checks prevent lost updates. The backend derives the `STAFF_USER` actor and records `PRODUCT_LOGISTICS_EVIDENCE_UPDATED`. No historical backfill is performed. Existing Scoop overrides remain compatible evidence and move to the shared model only when staff next saves through Step 7.
+
+| Supplier | Preferred logistics source | Shared fallback |
+| --- | --- | --- |
+| Scoop | Feed/catalogue, guarded Product page, pasted official source | Staff manual evidence |
+| CJ | Exact-variant API observations | Missing fields only |
+| Syntech | Structured catalogue feed | Missing fields only |
+| Mustek | Accepted structured evidence where present | Staff manual evidence |
+| TVR | Advisory website dimensions are not promoted | Staff manual evidence |
+| TEKCENTRAL | None | Full staff manual evidence |
+
 The shared workspace remains URL-backed with `productSetup` and `step`. In-place step controls update history, preserve refresh/back/forward behavior, expose accordion state, move focus to the selected section and do not create supplier-specific routes.
 
 ## Legacy and specialist disposition

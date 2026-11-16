@@ -26,7 +26,7 @@
     "backend:customer-persistence:test": "tsc -p tsconfig.backend.json && node backend-dist/backend/tests/customerPostgresIntegration.test.js",
     "backend:staff-persistence:test": "tsc -p tsconfig.backend.json && node backend-dist/backend/tests/staffPostgresIntegration.test.js",
     "backend:catalogue-persistence:test": "tsc -p tsconfig.backend.json && node backend-dist/backend/tests/cataloguePostgresIntegration.test.js",
-    "backend:onboarding:test": "tsc -p tsconfig.backend.json && node backend-dist/backend/tests/productOnboarding.test.js",
+    "backend:onboarding:test": "tsc -p tsconfig.backend.json && node backend-dist/backend/tests/productManualLogistics.test.js && node backend-dist/backend/tests/productOnboarding.test.js",
     "backend:commerce-persistence:test": "tsc -p tsconfig.backend.json && node backend-dist/backend/tests/commercePostgresIntegration.test.js",
     "backend:syntech-uat-fixture:test": "tsc -p tsconfig.backend.json && RUN_SYNTECH_UAT_FIXTURE_INTEGRATION=1 node --env-file=.env backend-dist/backend/tests/syntechUatFixturePostgresIntegration.test.js",
     "backend:invoice-persistence:test": "tsc -p tsconfig.backend.json && RUN_INVOICE_PERSISTENCE_INTEGRATION=1 node backend-dist/backend/tests/invoiceDeliveryPostgresIntegration.test.js",

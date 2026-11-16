@@ -509,6 +509,7 @@ Publication maintenance keeps browser editor state, the backend-persisted saved 
 - Product-page enrichment accepts only public HTTPS `scoop.co.za` Product URLs. Account, login, checkout, cart, session, token, and customer URLs are rejected; backend fetches never reuse browser cookies.
 - Public-page fetches use an eight-second timeout, a 2 MiB response limit, bounded redirects with host revalidation, and normalized diagnostics. Raw fetched HTML is never rendered.
 - Exact page SKU identity is required before specifications, documents, or logistics evidence can be accepted. The common labelled More Information table is normalized without replacing curated public Product copy.
+- Step 7 retains feed/page/pasted-source resolution. New staff manual completion is stored in the supplier-neutral Product logistics revision model. Existing Scoop-specific overrides remain readable and are not bulk migrated.
 - Manual logistics remains effective until staff explicitly accepts verified authoritative extraction. Failed, incomplete, or mismatched extraction does not overwrite it.
 # Catalogue enrichment
 

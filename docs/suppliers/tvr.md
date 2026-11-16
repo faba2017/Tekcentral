@@ -106,3 +106,6 @@ TVR-A through TVR-H2 and the final closure checks establish the complete supplie
 Publication readiness keeps source presence separate from purchase availability. A fresh canonical supplier contribution proves that a current source path exists whether its stock state is available, low stock, out of stock, or unknown. `SOURCE_NOT_AVAILABLE` is reserved for Products without a usable fresh canonical supplier contribution; stock and approval states retain their own canonical blockers. Product launch selection, media completion, pricing approval, preview, and publication remain explicit staff responsibilities and are not supplier-integration completion criteria.
 
 Known source limitations remain fail-safe: three website records lack SKU, 22 normalized website-SKU groups are ambiguous, two commercial offer groups remain unresolved conflicts, and the workbook provides qualitative rather than numeric stock authority. These records do not gain fuzzy Product associations or unsafe pricing/availability authority.
+## Shared Product logistics
+
+Public catalogue weight and dimensions remain advisory Product specifications and are not automatically authoritative shipping evidence. Step 7 uses supplier-neutral staff evidence when no accepted logistics source exists.

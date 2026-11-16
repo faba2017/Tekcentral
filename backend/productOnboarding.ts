@@ -19,7 +19,16 @@ export interface NormalizedSupplierEvidence {
   sourceCategory?: string;
   sourceStatus: "CURRENT" | "STALE" | "UNAVAILABLE" | "UNKNOWN";
   stock?: { status: "AVAILABLE" | "OUT_OF_STOCK" | "UNKNOWN"; quantity?: number; observedAt?: string; freshness?: "FRESH" | "STALE" | "UNKNOWN" };
-  logistics?: { status: "COMPLETE" | "PARTIAL" | "MISSING" | "NOT_APPLICABLE"; source?: string; observedAt?: string };
+  logistics?: {
+    status: "COMPLETE" | "PARTIAL" | "MISSING" | "NOT_APPLICABLE";
+    source?: string;
+    observedAt?: string;
+    weightGrams?: number;
+    lengthMm?: number;
+    widthMm?: number;
+    heightMm?: number;
+    sourceUrl?: string;
+  };
   commercial?: { status: "CURRENT" | "STALE" | "MISSING" | "NOT_APPLICABLE"; cost?: number; currency?: string; observedAt?: string; taxBasis?: "EXCLUSIVE" | "INCLUSIVE" | "UNKNOWN"; priceMeaning?: string };
   mediaCandidates?: string[];
   provenance?: Record<string, string | number | boolean | undefined>;
@@ -81,6 +90,14 @@ export interface ProductOnboardingReadiness {
   publicationEligible: boolean;
   publicationState: ProductOnboardingContext["publication"]["state"];
   alreadyPublished: boolean;
+  logisticsResolution?: {
+    capabilities: { structured: boolean; specialistFetch: boolean; pastedSource: boolean; manual: boolean };
+    activeManualRevision: number;
+    missingFields: Array<"weightGrams" | "lengthMm" | "widthMm" | "heightMm">;
+    fieldProvenance: Partial<Record<"weightGrams" | "lengthMm" | "widthMm" | "heightMm", { sourceType: "SUPPLIER" | "STAFF_MANUAL"; source: string; observedAt?: string }>>;
+    supplierEvidence?: NormalizedSupplierEvidence["logistics"];
+    conflicts: Array<{ field: "weightGrams" | "lengthMm" | "widthMm" | "heightMm"; supplierValue: number; manualValue: number }>;
+  };
 }
 
 const labels: Record<ProductOnboardingStepId, string> = {

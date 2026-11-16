@@ -72,6 +72,7 @@ import { canonicalTaxonomyPath, createCanonicalTaxonomyNode, getCanonicalTaxonom
 import { listSupplierCategoryMappings, normalizeSupplierSourcePath } from "./supplierCategoryMappingRepository.js";
 import { createPublicationDraftFromActiveVersion, getPublicationPreview, getPublicationReview, getPublicationSummary, getPublicProductBySlug, ingestAndAssociatePrivateMustekImage, ingestAndAssociatePublicationImage, ingestAndAssociateTvrWebsiteImage, listPublicProducts, publishSavedDraft, removePublicationMedia, rollbackProduct, savePublicationDraft, unpublishProduct, uploadAndAssociatePublicationImage } from "./productPublicationRepository.js";
 import { getProductOnboardingReadiness } from "./productOnboardingService.js";
+import { saveManualLogisticsEvidence } from "./productManualLogisticsRepository.js";
 import {
   isDuplicatePayfastItn,
   readPayfastConfig,
@@ -1795,6 +1796,19 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       sendJson(response, 200, await getProductOnboardingReadiness(decodeURIComponent(onboardingReadinessMatch[1])));
       return;
     }
+    const manualLogisticsMatch = url.pathname.match(/^\/api\/admin\/products\/([^/]+)\/logistics-evidence$/);
+    if (request.method === "PATCH" && manualLogisticsMatch) {
+      const staff = await currentStaff(request); const actor = staff!.context;
+      if (!actor.actorId) throw new StaffAuthError("AUTHENTICATION_REQUIRED", "Authenticated staff identity is required.", 401);
+      const productId = decodeURIComponent(manualLogisticsMatch[1]); const product = await getInternalProduct(productId);
+      if (!product) { sendJson(response, 404, { error: "Internal product not found." }); return; }
+      const body = await readJsonBody<{ expectedRevision?: number; classification?: "PRODUCT"|"PACKAGE"|"SHIPPING"; sourceReference?: string; weightGrams?: number; lengthMm?: number; widthMm?: number; heightMm?: number }>(request);
+      const before = await getProductOnboardingReadiness(productId);
+      const saved = await saveManualLogisticsEvidence({ productId, supplierCode: before.source.supplierCode, supplierIdentity: before.source.sourceVariantId ?? before.source.supplierSku ?? before.source.sourceProductId, expectedRevision: Number(body.expectedRevision ?? 0), classification: body.classification ?? "PACKAGE", sourceReference: body.sourceReference, weightGrams: body.weightGrams, lengthMm: body.lengthMm, widthMm: body.widthMm, heightMm: body.heightMm, actorStaffId: actor.actorId, actorLabel: actor.actorLabel });
+      const readiness = await getProductOnboardingReadiness(productId);
+      if (saved.changed) await recordAdminAuditBestEffort({ category:"AUDIT",...staffAuditActor(actor),subsystem:"PRODUCTS",actionType:"PRODUCT_LOGISTICS_EVIDENCE_UPDATED",entityType:"PRODUCT",entityId:productId,entityLabel:product.name,summary:"Staff saved canonical manual Product logistics evidence.",before:[{label:"Revision",value:saved.previous?.revision??0},{label:"Status",value:before.source.logistics?.status}],after:[{label:"Revision",value:saved.evidence.revision},{label:"Status",value:readiness.source.logistics?.status}],metadata:[{label:"Supplier",value:before.source.supplierCode},{label:"Source type",value:"STAFF_MANUAL"},{label:"Changed fields",value:["weightGrams","lengthMm","widthMm","heightMm"].filter((field)=>body[field as keyof typeof body]!==undefined).join(", ")}],targetRoute:`/admin/products?productSetup=${encodeURIComponent(productId)}&step=LOGISTICS`,idempotencyKey:`product-logistics:${productId}:${saved.evidence.revision}` });
+      sendJson(response, 200, { ...saved, readiness }); return;
+    }
     if (request.method === "GET" && publicationReviewMatch) {
       sendJson(response, 200, await getPublicationReview(decodeURIComponent(publicationReviewMatch[1])));
       return;
@@ -2041,11 +2055,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     const scoopPageLogisticsMatch = url.pathname.match(/^\/api\/admin\/suppliers\/scoop\/products\/([^/]+)\/logistics\/scoop-page$/);
     if (request.method === "POST" && scoopPageLogisticsMatch) {
+      const staff = await currentStaff(request);
       const supplierSku = decodeURIComponent(scoopPageLogisticsMatch[1]); const body = await readJsonBody<{ action?: "FETCH" | "PREVIEW" | "APPLY" | "CONFIRM_REVISION"; sourceUrl?: string; sourceType?: "SCOOP_PRODUCT_PAGE" | "MANUFACTURER_PRODUCT_PAGE" | "MANUFACTURER_DATASHEET" | "APPROVED_SOURCE_CAPTURE"; content?: string; contentFingerprint?: string; confirmConflict?: boolean }>(request);
       if (body.action === "PREVIEW") { sendJson(response, 200, { preview: await previewScoopPageLogistics({ supplierSku, sourceUrl: body.sourceUrl, sourceType: body.sourceType, content: body.content ?? "" }) }); return; }
       if (body.action === "CONFIRM_REVISION") { sendJson(response, 200, await confirmScoopHardwareRevision({ supplierSku, sourceUrl: body.sourceUrl, sourceType: body.sourceType, content: body.content ?? "", contentFingerprint: body.contentFingerprint ?? "" })); return; }
       if (body.action === "APPLY") {
-        const result = await applyScoopPageLogistics({ supplierSku, sourceUrl: body.sourceUrl, sourceType: body.sourceType, content: body.content ?? "", contentFingerprint: body.contentFingerprint ?? "", confirmConflict: body.confirmConflict });
+        const result = await applyScoopPageLogistics({ supplierSku, sourceUrl: body.sourceUrl, sourceType: body.sourceType, content: body.content ?? "", contentFingerprint: body.contentFingerprint ?? "", confirmConflict: body.confirmConflict, actor: staff!.context.actorLabel });
+        await recordAdminAuditBestEffort({ category: "AUDIT", ...staffAuditActor(staff!.context), subsystem: "PRODUCTS", actionType: "PRODUCT_LOGISTICS_SOURCE_EVIDENCE_APPLIED", entityType: "SUPPLIER_OFFER", entityId: supplierSku, entityLabel: `Scoop ${supplierSku}`, summary: body.content ? "Staff reviewed and applied supplier page-source logistics evidence." : "Staff applied supplier logistics evidence.", after: [{ label: "Supplier", value: "SCOOP" }, { label: "Evidence method", value: body.content ? "STAFF_PASTED_HTML" : "GUARDED_SOURCE_FETCH" }, { label: "Status", value: result.preview.status }], targetRoute: `/admin/suppliers/scoop/products?sku=${encodeURIComponent(supplierSku)}`, idempotencyKey: `scoop-logistics:${supplierSku}:${result.preview.contentFingerprint}` });
         const product = await getScoopCatalogueProduct(supplierSku); let proposal;
         if (product?.logisticsMetadata?.status === "COMPLETE") {
           const mapping = (await listSupplierProductMappings()).find((item) => item.supplierCode === "SCOOP" && item.supplierSku === supplierSku && item.status === "VERIFIED");
@@ -2053,14 +2069,16 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         }
         sendJson(response, 200, { ...result, product, proposal }); return;
       }
-      sendJson(response, 200, await fetchScoopPageLogistics({ supplierSku })); return;
+      sendJson(response, 200, await fetchScoopPageLogistics({ supplierSku, sourceUrl: body.sourceUrl, actor: staff!.context.actorLabel })); return;
     }
     const scoopAdminLogisticsMatch = url.pathname.match(/^\/api\/admin\/suppliers\/scoop\/products\/([^/]+)\/logistics\/admin$/);
     if (request.method === "PATCH" && scoopAdminLogisticsMatch) {
+      const staff = await currentStaff(request);
       const supplierSku = decodeURIComponent(scoopAdminLogisticsMatch[1]);
       const body = await readJsonBody<{ weightGrams?: number; lengthMm?: number; widthMm?: number; heightMm?: number; clear?: boolean }>(request);
-      const result = body.clear ? await clearScoopAdminLogistics(supplierSku) : await saveScoopAdminLogistics({ supplierSku, weightGrams: body.weightGrams, lengthMm: body.lengthMm, widthMm: body.widthMm, heightMm: body.heightMm });
+      const result = body.clear ? await clearScoopAdminLogistics(supplierSku, staff!.context.actorLabel) : await saveScoopAdminLogistics({ supplierSku, weightGrams: body.weightGrams, lengthMm: body.lengthMm, widthMm: body.widthMm, heightMm: body.heightMm, actor: staff!.context.actorLabel });
       if (!result) { sendJson(response, 404, { error: "Scoop product not found." }); return; }
+      await recordAdminAuditBestEffort({ category: "AUDIT", ...staffAuditActor(staff!.context), subsystem: "PRODUCTS", actionType: body.clear ? "PRODUCT_LOGISTICS_OVERRIDE_CLEARED" : "PRODUCT_LOGISTICS_OVERRIDE_UPDATED", entityType: "SUPPLIER_OFFER", entityId: supplierSku, entityLabel: `Scoop ${supplierSku}`, summary: body.clear ? "Staff cleared the manual Product logistics override." : "Staff saved manual Product logistics evidence.", after: body.clear ? [] : [{ label: "Evidence source", value: "STAFF_SUPPLIED" }, { label: "Weight (g)", value: body.weightGrams }, { label: "Dimensions (mm)", value: `${body.lengthMm ?? "-"} × ${body.widthMm ?? "-"} × ${body.heightMm ?? "-"}` }], targetRoute: `/admin/suppliers/scoop/products?sku=${encodeURIComponent(supplierSku)}` });
       sendJson(response, 200, result); return;
     }
     const scoopLogisticsAuditMatch = url.pathname.match(/^\/api\/admin\/suppliers\/scoop\/products\/([^/]+)\/logistics\/audit$/);

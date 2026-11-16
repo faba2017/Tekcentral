@@ -251,6 +251,8 @@ Currency has explicit provenance: `CJ_API_CONTRACT`, `API_FIELD`, `ACCOUNT_CONFI
 
 Variant logistics observations retain the CJ source field, source fingerprint, capture time, unit, classification and confidence. `variantWeight`/`weight` are treated as shipping-weight evidence in grams only when captured by the current CJ normalizer. Dimensions are retained as product-dimension evidence in millimetres and do not become package dimensions. Historical numbers without field-level provenance remain partial review evidence. Freight quotes corroborate route eligibility only and do not fill static dimensions.
 
+Shared Product Configuration Step 7 prefers these exact-variant observations. Missing required fields may be completed through supplier-neutral manual evidence. Scoop page/HTML controls are not shown for CJ.
+
 `READY_FOR_PRICING` is derived only when product mapping and exact VID are verified, cost and currency are authoritative, FX evidence exists when required, and variant logistics are complete. The evidence audit does not select products for launch, create or approve pricing, publish products, or call CJ order endpoints.
 
 The controlled source refresh calls only CJ product detail, variant detail, and cached category endpoints for products already imported into the evidence cohort. Refresh observations retain endpoint, source fields, fingerprints and capture times; repeated identical fingerprints are deduplicated while prior observations and staff evidence remain stored.

@@ -146,7 +146,7 @@ import { deriveScoopLogisticsStatus, effectiveScoopLogisticsMetadata, validateSc
 import { deriveScoopLaunchReadiness, deriveScoopProductWorkflow, deriveScoopPublicationAction, isInScoopLaunchReadinessCohort, isSelectedScoopLogisticsException, latestScoopProposal, scoopCandidateReasons, suggestScoopLaunchCandidates } from "../suppliers/scoop/scoopLaunchReadiness.js";
 import { applyScoopLogisticsCsv, exportMissingScoopLogisticsCsv, previewScoopLogisticsCsv } from "../suppliers/scoop/scoopLogisticsCsv.js";
 import { acquireScoopManufacturerLogistics, manufacturerIdentityFailure, matchesScoopManufacturerAlias, normalizeDimension, normalizeWeight, type ScoopManufacturerMetadataProvider } from "../suppliers/scoop/scoopManufacturerLogistics.js";
-import { applyScoopPageLogistics, extractScoopHardwareRevision, fetchScoopPageLogistics, parseScoopPageLogistics, previewScoopPageLogistics } from "../suppliers/scoop/scoopPageLogistics.js";
+import { applyScoopPageLogistics, extractScoopHardwareRevision, fetchScoopPageLogistics, parseScoopPageLogistics, previewScoopPageLogistics, SCOOP_PAGE_SOURCE_MAX_BYTES } from "../suppliers/scoop/scoopPageLogistics.js";
 import { manufacturerContentDocuments, parseScoopProductContent, previewScoopProductContent, productPhysicalSpecifications } from "../suppliers/scoop/scoopProductContent.js";
 import { deriveProductContentStatus, mergeProductSpecifications, normalizeSpecificationLabel } from "../productContent.js";
 import { createTekCentralProductFromScoop, exactScoopProductIdentityMatches, requireWeakMappingConfirmation, scoreScoopProductMatch, suggestScoopCategory, suggestScoopProductTitles } from "../suppliers/scoop/scoopProductCreation.js";
@@ -2040,6 +2040,12 @@ try {
   const exactPagePreview = await previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: "SKU: FLY-2G\nProduct Weight: 250 g\nProduct Dimensions: 20 x 10 x 5 cm" });
   assert.equal(exactPagePreview.identityConfidence, "HIGH");
   assert.equal(exactPagePreview.status, "COMPLETE");
+  const hostilePagePreview = await previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: `<script>SKU: WRONG; Product Weight: 999 kg</script><style>Product Dimensions: 999 x 999 x 999 m</style><iframe srcdoc="ignored"></iframe><object>ignored</object><form><input onfocus="throw new Error('no')"></form><svg onload="throw new Error('no')"><script>throw new Error('no')</script></svg><h1>SKU: FLY-2G</h1><p onmouseover="ignored">Product Weight: 250 g</p><p>Product Dimensions: 20 x 10 x 5 cm</p>` });
+  assert.equal(hostilePagePreview.identityConfidence, "HIGH");
+  assert.equal(hostilePagePreview.status, "COMPLETE");
+  assert.equal(hostilePagePreview.product?.weightGrams, 250);
+  assert.deepEqual([hostilePagePreview.product?.lengthMm, hostilePagePreview.product?.widthMm, hostilePagePreview.product?.heightMm], [200, 100, 50]);
+  await assert.rejects(previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: "x".repeat(SCOOP_PAGE_SOURCE_MAX_BYTES + 1) }), (error: unknown) => error instanceof Error && error.message === "Scoop page source exceeds the 900 KB limit." && (error as Error & { code?: string }).code === "SOURCE_TOO_LARGE");
   const wrongPagePreview = await previewScoopPageLogistics({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: "SKU: OTHER\nProduct Weight: 250 g\nProduct Dimensions: 20 x 10 x 5 cm" });
   assert.equal(wrongPagePreview.blocker, "IDENTITY_MISMATCH");
   const wrongContentPreview = await previewScoopProductContent({ supplierSku: "FLY-2G", sourceUrl: scoopPageUrl, content: rgEg710xsFixture });

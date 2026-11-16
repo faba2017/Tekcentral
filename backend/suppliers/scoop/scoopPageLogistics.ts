@@ -21,6 +21,7 @@ export type ScoopEvidenceSourceType = "SCOOP_PRODUCT_PAGE" | "MANUFACTURER_PRODU
 const clean = (value: string) => value.replace(/<script\b[\s\S]*?<\/script>/gi, " ").replace(/<style\b[\s\S]*?<\/style>/gi, " ").replace(/<\/(?:tr|p|div|li|h[1-6])>|<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&times;|&#215;/gi, "×").replace(/&amp;/gi, "&").replace(/[ \t]+/g, " ");
 const identity = (value?: string) => (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 const CACHE_MS = 30 * 24 * 60 * 60 * 1000;
+export const SCOOP_PAGE_SOURCE_MAX_BYTES = 900_000;
 
 function weight(value?: string) {
   const match = value?.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|lb)\b/i); if (!match) return undefined;
@@ -85,6 +86,7 @@ export function extractScoopHardwareRevision(supplierSku: string, content: strin
 }
 
 export async function previewScoopPageLogistics(input: { supplierSku: string; sourceUrl?: string; sourceType?: ScoopEvidenceSourceType; content: string }): Promise<ScoopPageLogisticsPreview> {
+  if (Buffer.byteLength(input.content, "utf8") > SCOOP_PAGE_SOURCE_MAX_BYTES) throw Object.assign(new Error("Scoop page source exceeds the 900 KB limit."), { code: "SOURCE_TOO_LARGE", status: 413 });
   const product = await getScoopCatalogueProduct(input.supplierSku); if (!product) throw new Error("Scoop product not found.");
   const sourceType = input.sourceType ?? "SCOOP_PRODUCT_PAGE"; const candidateUrl = input.sourceUrl ?? (sourceType === "SCOOP_PRODUCT_PAGE" ? knownUrl(product) : undefined); const sourceUrl = trustedSourceUrl(candidateUrl, sourceType, product.manufacturer);
   if (!sourceUrl && sourceType !== "APPROVED_SOURCE_CAPTURE") return { supplierSku: product.supplierSku, sourceUrl: input.sourceUrl ?? "", sourceType, identityConfidence: "LOW", extractionConfidence: "LOW", components: [], status: "MISSING", blocker: "PRODUCT_URL_UNKNOWN", contentFingerprint: createHash("sha256").update(input.content).digest("hex"), missingEvidence: ["Trusted authoritative source URL"] };
@@ -130,8 +132,8 @@ export async function confirmScoopHardwareRevision(input: { supplierSku: string;
   return { outcome: "REVISION_CONFIRMED" as const, revision: preview.confirmedHardwareRevision, enrichment, product: await getScoopCatalogueProduct(input.supplierSku) };
 }
 
-export async function fetchScoopPageLogistics(input: { supplierSku: string; fetchImpl?: typeof fetch }) {
-  const product = await getScoopCatalogueProduct(input.supplierSku); if (!product) throw new Error("Scoop product not found."); const sourceUrl = knownUrl(product);
+export async function fetchScoopPageLogistics(input: { supplierSku: string; sourceUrl?: string; fetchImpl?: typeof fetch; actor?: string }) {
+  const product = await getScoopCatalogueProduct(input.supplierSku); if (!product) throw new Error("Scoop product not found."); const sourceUrl = canonicalScoopUrl(input.sourceUrl) ?? knownUrl(product);
   const cached = product.logisticsSources?.find((source) => source.source === "SUPPLIER_PRODUCT_PAGE" && Date.now() - new Date(source.fetchedAt).getTime() < CACHE_MS);
   if (cached) return { outcome: "CACHED" as const, product };
   const fail = async (reason: ScoopPageLogisticsFailure, message = reason.replace(/_/g, " ")) => {
@@ -147,7 +149,7 @@ export async function fetchScoopPageLogistics(input: { supplierSku: string; fetc
     const canonicalResponseUrl = fetched.canonicalUrl ?? sourceUrl;
     const preview = await previewScoopPageLogistics({ supplierSku: input.supplierSku, sourceUrl: canonicalResponseUrl, content });
     if (preview.blocker) return { ...(await fail(preview.blocker)), preview };
-    return { ...(await applyScoopPageLogistics({ supplierSku: input.supplierSku, sourceUrl: canonicalResponseUrl, content, contentFingerprint: preview.contentFingerprint })), outcome: "AVAILABLE" as const };
+    return { ...(await applyScoopPageLogistics({ supplierSku: input.supplierSku, sourceUrl: canonicalResponseUrl, content, contentFingerprint: preview.contentFingerprint, actor: input.actor })), outcome: "AVAILABLE" as const };
   } catch (error) { return fail("NETWORK_ERROR", error instanceof Error ? error.message : "Scoop page request failed."); }
 }
 

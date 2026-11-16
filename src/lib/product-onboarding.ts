@@ -30,7 +30,7 @@ export interface ProductOnboardingReadiness {
     sourceCategory?: string;
     sourceStatus: "CURRENT" | "STALE" | "UNAVAILABLE" | "UNKNOWN";
     stock?: { status: string; quantity?: number; observedAt?: string; freshness?: string };
-    logistics?: { status: string; source?: string; observedAt?: string };
+    logistics?: { status: string; source?: string; observedAt?: string; weightGrams?: number; lengthMm?: number; widthMm?: number; heightMm?: number; sourceUrl?: string };
     commercial?: { status: string; cost?: number; currency?: string; observedAt?: string; taxBasis?: "EXCLUSIVE" | "INCLUSIVE" | "UNKNOWN"; priceMeaning?: string };
     mediaCandidates?: string[];
     provenance?: Record<string, string | number | boolean | undefined>;
@@ -47,6 +47,14 @@ export interface ProductOnboardingReadiness {
   publicationEligible: boolean;
   publicationState: "NOT_PUBLISHED" | "READY_FOR_PUBLISH_REVIEW" | "PUBLISHED" | "UNPUBLISHED";
   alreadyPublished: boolean;
+  logisticsResolution?: {
+    capabilities: { structured: boolean; specialistFetch: boolean; pastedSource: boolean; manual: boolean };
+    activeManualRevision: number;
+    missingFields: Array<"weightGrams" | "lengthMm" | "widthMm" | "heightMm">;
+    fieldProvenance: Partial<Record<"weightGrams" | "lengthMm" | "widthMm" | "heightMm", { sourceType: "SUPPLIER" | "STAFF_MANUAL"; source: string; observedAt?: string }>>;
+    supplierEvidence?: ProductOnboardingReadiness["source"]["logistics"];
+    conflicts: Array<{ field: "weightGrams" | "lengthMm" | "widthMm" | "heightMm"; supplierValue: number; manualValue: number }>;
+  };
 }
 
 export function isProductOnboardingStep(value: string | null): value is ProductOnboardingStepId {
